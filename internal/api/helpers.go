@@ -99,3 +99,28 @@ func retrieveRequestParams[A RequestParams](r *http.Request, params *A) error {
 	}
 	return nil
 }
+
+// isPhoneNumber checks if the string looks like a phone number
+// This is used to auto-detect if a field that typically contains email actually contains a phone number
+func isPhoneNumber(s string) bool {
+	// Simple heuristic: if it doesn't contain @ and contains mostly digits, it's likely a phone
+	if len(s) >= 10 {
+		// Check if it contains '@' (common in emails but not in phones)
+		hasAt := false
+		digitCount := 0
+		for _, c := range s {
+			if c == '@' {
+				hasAt = true
+				break
+			}
+			if c >= '0' && c <= '9' {
+				digitCount++
+			}
+		}
+		// If no @ symbol and more than 80% are digits, consider it a phone number
+		if !hasAt && float64(digitCount)/float64(len(s)) > 0.8 {
+			return true
+		}
+	}
+	return false
+}

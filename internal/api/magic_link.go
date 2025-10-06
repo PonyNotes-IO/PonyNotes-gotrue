@@ -17,39 +17,52 @@ import (
 // MagicLinkParams holds the parameters for a magic link request
 type MagicLinkParams struct {
 	Email               string                 `json:"email"`
+	Phone               string                 `json:"phone"`
 	Data                map[string]interface{} `json:"data"`
 	CodeChallengeMethod string                 `json:"code_challenge_method"`
 	CodeChallenge       string                 `json:"code_challenge"`
 }
 
 func (p *MagicLinkParams) Validate(a *API) error {
-	if p.Email == "" {
-		return apierrors.NewUnprocessableEntityError(apierrors.ErrorCodeValidationFailed, "Password recovery requires an email")
+	// Support both email and phone
+	if p.Email == "" && p.Phone == "" {
+		return apierrors.NewUnprocessableEntityError(apierrors.ErrorCodeValidationFailed, "Either email or phone is required")
 	}
+	
 	var err error
-	p.Email, err = a.validateEmail(p.Email)
-	if err != nil {
-		return err
+	
+	// Auto-detect if "email" field contains a phone number
+	if p.Email != "" && isPhoneNumber(p.Email) {
+		// Move phone from email field to phone field
+		p.Phone = p.Email
+		p.Email = ""
 	}
+	
+	if p.Email != "" {
+		// Validate email format
+		p.Email, err = a.validateEmail(p.Email)
+		if err != nil {
+			return err
+		}
+	} else if p.Phone != "" {
+		// Validate phone format
+		p.Phone, err = validatePhone(p.Phone)
+		if err != nil {
+			return err
+		}
+	}
+	
 	if err := validatePKCEParams(p.CodeChallengeMethod, p.CodeChallenge); err != nil {
 		return err
 	}
 	return nil
 }
 
-// MagicLink sends a recovery email
+// MagicLink sends a recovery email or SMS OTP
 func (a *API) MagicLink(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	db := a.db.WithContext(ctx)
 	config := a.config
-
-	if !config.External.Email.Enabled {
-		return apierrors.NewUnprocessableEntityError(apierrors.ErrorCodeEmailProviderDisabled, "Email logins are disabled")
-	}
-
-	if !config.External.Email.MagicLinkEnabled {
-		return apierrors.NewUnprocessableEntityError(apierrors.ErrorCodeEmailProviderDisabled, "Login with magic link is disabled")
-	}
 
 	params := &MagicLinkParams{}
 	jsonDecoder := json.NewDecoder(r.Body)
@@ -60,6 +73,34 @@ func (a *API) MagicLink(w http.ResponseWriter, r *http.Request) error {
 
 	if err := params.Validate(a); err != nil {
 		return err
+	}
+
+	// If phone is provided, delegate to OTP endpoint
+	if params.Phone != "" {
+		// Convert MagicLinkParams to OtpParams and delegate to Otp function
+		otpParams := &OtpParams{
+			Phone:               params.Phone,
+			CreateUser:          true,
+			Data:                params.Data,
+			CodeChallengeMethod: params.CodeChallengeMethod,
+			CodeChallenge:       params.CodeChallenge,
+		}
+		otpParamsJSON, err := json.Marshal(otpParams)
+		if err != nil {
+			return apierrors.NewInternalServerError("Failed to marshal OTP params").WithInternalError(err)
+		}
+		r.Body = io.NopCloser(bytes.NewReader(otpParamsJSON))
+		r.ContentLength = int64(len(otpParamsJSON))
+		return a.Otp(w, r)
+	}
+
+	// Otherwise, continue with email magic link flow
+	if !config.External.Email.Enabled {
+		return apierrors.NewUnprocessableEntityError(apierrors.ErrorCodeEmailProviderDisabled, "Email logins are disabled")
+	}
+
+	if !config.External.Email.MagicLinkEnabled {
+		return apierrors.NewUnprocessableEntityError(apierrors.ErrorCodeEmailProviderDisabled, "Login with magic link is disabled")
 	}
 
 	if params.Data == nil {

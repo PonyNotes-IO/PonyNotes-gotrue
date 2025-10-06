@@ -2,6 +2,8 @@ FROM golang:1.23.7-alpine3.20 as build
 ENV GO111MODULE=on
 ENV CGO_ENABLED=0
 ENV GOOS=linux
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GOSUMDB=sum.golang.google.cn
 
 RUN apk add --no-cache make git
 
