@@ -148,7 +148,18 @@ func (a *API) MagicLink(w http.ResponseWriter, r *http.Request) error {
 			if err := a.Signup(fakeResponse, r); err != nil {
 				return err
 			}
-			newBodyContent := &SignupParams{
+			
+		// Mark that password was not set by user (it's auto-generated for OTP/magic link)
+		user, err = models.FindUserByEmailAndAudience(db, params.Email, aud)
+		if err != nil {
+			return apierrors.NewInternalServerError("Database error finding user after signup").WithInternalError(err)
+		}
+		user.PasswordSetByUser = false
+		if err := db.UpdateOnly(user, "password_set_by_user"); err != nil {
+			return apierrors.NewInternalServerError("Database error updating user").WithInternalError(err)
+		}
+		
+		newBodyContent := &SignupParams{
 				Email:               params.Email,
 				Data:                params.Data,
 				CodeChallengeMethod: params.CodeChallengeMethod,
@@ -162,12 +173,22 @@ func (a *API) MagicLink(w http.ResponseWriter, r *http.Request) error {
 			r.Body = io.NopCloser(bytes.NewReader(metadata))
 			return a.MagicLink(w, r)
 		}
-		// otherwise confirmation email already contains 'magic link'
-		if err := a.Signup(fakeResponse, r); err != nil {
-			return err
-		}
+	// otherwise confirmation email already contains 'magic link'
+	if err := a.Signup(fakeResponse, r); err != nil {
+		return err
+	}
 
-		return sendJSON(w, http.StatusOK, make(map[string]string))
+	// Mark that password was not set by user (it's auto-generated for OTP/magic link)
+	user, err = models.FindUserByEmailAndAudience(db, params.Email, aud)
+	if err != nil {
+		return apierrors.NewInternalServerError("Database error finding user after signup").WithInternalError(err)
+	}
+	user.PasswordSetByUser = false
+	if err := db.UpdateOnly(user, "password_set_by_user"); err != nil {
+		return apierrors.NewInternalServerError("Database error updating user").WithInternalError(err)
+	}
+
+	return sendJSON(w, http.StatusOK, make(map[string]string))
 	}
 
 	if isPKCEFlow(flowType) {

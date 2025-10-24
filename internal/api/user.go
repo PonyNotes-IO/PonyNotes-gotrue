@@ -76,6 +76,99 @@ func (a *API) UserGet(w http.ResponseWriter, r *http.Request) error {
 	return sendJSON(w, http.StatusOK, user)
 }
 
+// CheckPasswordStatusParams parameters for checking password status
+type CheckPasswordStatusParams struct {
+	Email string `json:"email"`
+	Phone string `json:"phone"`
+}
+
+// CheckPasswordStatus checks if a user has set a password (public endpoint, no auth required)
+func (a *API) CheckPasswordStatus(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	db := a.db.WithContext(ctx)
+	aud := a.requestAud(ctx, r)
+
+	params := &CheckPasswordStatusParams{}
+	if err := retrieveRequestParams(r, params); err != nil {
+		return err
+	}
+
+	// Validate that either email or phone is provided
+	if params.Email == "" && params.Phone == "" {
+		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Either email or phone must be provided")
+	}
+
+	if params.Email != "" && params.Phone != "" {
+		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Only provide either email or phone, not both")
+	}
+
+	var user *models.User
+	var err error
+
+	if params.Email != "" {
+		// Validate email format
+		params.Email, err = a.validateEmail(params.Email)
+		if err != nil {
+			return err
+		}
+		user, err = models.FindUserByEmailAndAudience(db, params.Email, aud)
+	} else {
+		// Validate phone format
+		params.Phone, err = validatePhone(params.Phone)
+		if err != nil {
+			return err
+		}
+		user, err = models.FindUserByPhoneAndAudience(db, params.Phone, aud)
+	}
+
+	// If user not found, return false for both fields
+	if err != nil {
+		if models.IsNotFoundError(err) {
+			response := map[string]interface{}{
+				"user_exists":           false,
+				"has_password":          false,
+				"password_set_by_user":  false,
+			}
+			return sendJSON(w, http.StatusOK, response)
+		}
+		return apierrors.NewInternalServerError("Database error finding user").WithInternalError(err)
+	}
+
+	// User exists, return password status
+	response := map[string]interface{}{
+		"user_exists":           true,
+		"has_password":          user.HasPassword(),
+		"password_set_by_user":  user.PasswordSetByUser,
+	}
+
+	return sendJSON(w, http.StatusOK, response)
+}
+
+// UserAuthInfo returns user authentication information including password status
+func (a *API) UserAuthInfo(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	claims := getClaims(ctx)
+	if claims == nil {
+		return apierrors.NewInternalServerError("Could not read claims")
+	}
+
+	aud := a.requestAud(ctx, r)
+	audienceFromClaims, _ := claims.GetAudience()
+	if len(audienceFromClaims) == 0 || aud != audienceFromClaims[0] {
+		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Token audience doesn't match request audience")
+	}
+
+	user := getUser(ctx)
+
+	response := map[string]interface{}{
+		"has_password": user.HasPassword(),
+		"email":        user.GetEmail(),
+		"phone":        user.GetPhone(),
+	}
+
+	return sendJSON(w, http.StatusOK, response)
+}
+
 // UserUpdate updates fields on a user
 func (a *API) UserUpdate(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
@@ -160,19 +253,17 @@ func (a *API) UserUpdate(w http.ResponseWriter, r *http.Request) error {
 
 		password := *params.Password
 		if password != "" {
-			isSamePassword := false
-
-			if user.HasPassword() {
-				auth, _, err := user.Authenticate(ctx, db, password, config.Security.DBEncryption.DecryptionKeys, false, "")
+			// 只有在用户主动设置过密码时才检查密码是否相同
+			// 如果密码是系统自动生成的（OTP/magic link 登录），允许用户"重新设置"密码
+			if user.HasPassword() && user.PasswordSetByUser {
+				isSamePassword, _, err := user.Authenticate(ctx, db, password, config.Security.DBEncryption.DecryptionKeys, false, "")
 				if err != nil {
 					return err
 				}
 
-				isSamePassword = auth
-			}
-
-			if isSamePassword {
-				return apierrors.NewUnprocessableEntityError(apierrors.ErrorCodeSamePassword, "New password should be different from the old password.")
+				if isSamePassword {
+					return apierrors.NewUnprocessableEntityError(apierrors.ErrorCodeSamePassword, "New password should be different from the old password.")
+				}
 			}
 		}
 
