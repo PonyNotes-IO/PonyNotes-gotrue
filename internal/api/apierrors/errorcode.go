@@ -92,6 +92,7 @@ const (
 	//#nosec G101 -- Not a secret value.
 	ErrorCodeInvalidCredentials        ErrorCode = "invalid_credentials"
 	ErrorCodeEmailAddressNotAuthorized ErrorCode = "email_address_not_authorized"
+	ErrorCodePasswordNotSet            ErrorCode = "password_is_not_set"
 	ErrorCodeEmailAddressInvalid       ErrorCode = "email_address_invalid"
 	ErrorCodeWeb3ProviderDisabled      ErrorCode = "web3_provider_disabled"
 	ErrorCodeWeb3UnsupportedChain      ErrorCode = "web3_unsupported_chain"

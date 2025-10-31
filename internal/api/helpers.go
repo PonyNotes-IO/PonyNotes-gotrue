@@ -78,6 +78,8 @@ type RequestParams interface {
 		adminUserDeleteParams |
 		security.GotrueRequest |
 		ChallengeFactorParams |
+		CheckPasswordStatusParams |
+		ThirdPartyParams |
 
 		struct {
 			Email string `json:"email"`

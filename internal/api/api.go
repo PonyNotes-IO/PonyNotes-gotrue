@@ -197,14 +197,14 @@ func NewAPIWithVersion(globalConfig *conf.GlobalConfiguration, db *storage.Conne
 		r.With(api.limitHandler(api.limiterOpts.Resend)).
 			With(api.verifyCaptcha).Post("/resend", api.Resend)
 
-	r.With(api.limitHandler(api.limiterOpts.MagicLink)).
-		With(api.verifyCaptcha).Post("/magiclink", api.MagicLink)
+		r.With(api.limitHandler(api.limiterOpts.MagicLink)).
+			With(api.verifyCaptcha).Post("/magiclink", api.MagicLink)
 
-	r.With(api.limitHandler(api.limiterOpts.Otp)).
-		With(api.verifyCaptcha).Post("/otp", api.Otp)
+		r.With(api.limitHandler(api.limiterOpts.Otp)).
+			With(api.verifyCaptcha).Post("/otp", api.Otp)
 
-	// Check password status endpoint - no authentication required
-	r.Post("/check_password_status", api.CheckPasswordStatus)
+		// Check password status endpoint - no authentication required
+		r.Get("/user/password/status", api.PasswordIsSet)
 
 		// rate limiting applied in handler
 		r.With(api.verifyCaptcha).With(api.oauthClientAuth).Post("/token", api.Token)

@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -82,63 +84,115 @@ type CheckPasswordStatusParams struct {
 	Phone string `json:"phone"`
 }
 
-// CheckPasswordStatus checks if a user has set a password (public endpoint, no auth required)
-func (a *API) CheckPasswordStatus(w http.ResponseWriter, r *http.Request) error {
+// PasswordIsSet checks if a user has set a password (public endpoint, no auth required)
+func (a *API) PasswordIsSet(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	db := a.db.WithContext(ctx)
 	aud := a.requestAud(ctx, r)
 
 	params := &CheckPasswordStatusParams{}
-	if err := retrieveRequestParams(r, params); err != nil {
-		return err
-	}
+	q := r.URL.Query()
+	params.Email = q.Get("email")
+	params.Phone = q.Get("phone")
 
-	// Validate that either email or phone is provided
-	if params.Email == "" && params.Phone == "" {
-		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Either email or phone must be provided")
-	}
+	fmt.Println(q)
 
-	if params.Email != "" && params.Phone != "" {
-		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Only provide either email or phone, not both")
-	}
+	emptyEmail := params.Email == ""
+	emptyPhone := params.Phone == ""
 
 	var user *models.User
 	var err error
 
-	if params.Email != "" {
-		// Validate email format
+	if emptyEmail && emptyPhone {
+		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Either email or phone must be provided")
+	}
+	if !emptyEmail && !emptyPhone {
+		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Only provide either email or phone, not both")
+	}
+
+	if !emptyEmail {
 		params.Email, err = a.validateEmail(params.Email)
 		if err != nil {
-			return err
+			return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, err.Error())
 		}
 		user, err = models.FindUserByEmailAndAudience(db, params.Email, aud)
 	} else {
-		// Validate phone format
 		params.Phone, err = validatePhone(params.Phone)
 		if err != nil {
-			return err
+			return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, err.Error())
 		}
 		user, err = models.FindUserByPhoneAndAudience(db, params.Phone, aud)
 	}
 
-	// If user not found, return false for both fields
 	if err != nil {
 		if models.IsNotFoundError(err) {
-			response := map[string]interface{}{
-				"user_exists":           false,
-				"has_password":          false,
-				"password_set_by_user":  false,
-			}
-			return sendJSON(w, http.StatusOK, response)
+			// user not found
+			return apierrors.NewNotFoundError(apierrors.ErrorCodeUserNotFound, "User not found")
 		}
+		// database ot other error
 		return apierrors.NewInternalServerError("Database error finding user").WithInternalError(err)
 	}
 
-	// User exists, return password status
-	response := map[string]interface{}{
-		"user_exists":           true,
-		"has_password":          user.HasPassword(),
-		"password_set_by_user":  user.PasswordSetByUser,
+	// user exists.return password_is_set
+	response := map[string]bool{
+		"password_is_set": user.PasswordIsSet,
+	}
+
+	return sendJSON(w, http.StatusOK, response)
+}
+
+// UpdatePassword updates the user's password
+func (a *API) UpdatePassword(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	config := a.config
+
+	// 1. 获取 JWT claims，保证请求已认证
+	claims := getClaims(ctx)
+	if claims == nil {
+		return apierrors.NewInternalServerError("Could not read claims")
+	}
+
+	// 2. 获取请求的 audience 并校验
+	aud := a.requestAud(ctx, r)
+	audienceFromClaims, _ := claims.GetAudience()
+	if len(audienceFromClaims) == 0 || aud != audienceFromClaims[0] {
+		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Token audience doesn't match request audience")
+	}
+
+	// 3. 获取当前用户
+	user := getUser(ctx)
+	if user == nil {
+		return apierrors.NewInternalServerError("Could not find user in context")
+	}
+
+	// 4. 解析请求参数
+	params := struct {
+		Password string `json:"password"`
+	}{}
+	if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
+		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Could not parse request body as JSON: "+err.Error())
+	}
+	if params.Password == "" {
+		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Password cannot be empty")
+	}
+
+	// 5. 更新密码
+	db := a.db.WithContext(ctx)
+	if err := user.SetPassword(ctx, params.Password, true, config.Security.DBEncryption.EncryptionKeyID, config.Security.DBEncryption.EncryptionKey); err != nil {
+		return err
+	}
+	// directly change this in the database without
+	// calling user.UpdatePassword() because this
+	// is not a password change, just encryption
+	// change in the database
+	if err := db.UpdateOnly(user, "encrypted_password"); err != nil {
+		return apierrors.NewInternalServerError("Error updating password").WithInternalError(err)
+	}
+
+	// 6. 返回结果（REST 风格，仅返回 password_is_set:true）
+	user.PasswordIsSet = true // 标记已设置密码
+	response := map[string]bool{
+		"password_is_set": user.PasswordIsSet,
 	}
 
 	return sendJSON(w, http.StatusOK, response)
@@ -255,7 +309,7 @@ func (a *API) UserUpdate(w http.ResponseWriter, r *http.Request) error {
 		if password != "" {
 			// 只有在用户主动设置过密码时才检查密码是否相同
 			// 如果密码是系统自动生成的（OTP/magic link 登录），允许用户"重新设置"密码
-			if user.HasPassword() && user.PasswordSetByUser {
+			if user.HasPassword() && user.PasswordIsSet {
 				isSamePassword, _, err := user.Authenticate(ctx, db, password, config.Security.DBEncryption.DecryptionKeys, false, "")
 				if err != nil {
 					return err

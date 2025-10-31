@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,6 +77,8 @@ func (ts *UserTestSuite) TestUserGet() {
 
 	w := httptest.NewRecorder()
 	ts.API.handler.ServeHTTP(w, req)
+	// 打印响应 body 内容
+	fmt.Println("Response Body:", w.Body.String())
 	require.Equal(ts.T(), http.StatusOK, w.Code)
 }
 
@@ -555,4 +558,139 @@ func (ts *UserTestSuite) TestUserUpdatePasswordLogoutOtherSessions() {
 	w = httptest.NewRecorder()
 	ts.API.handler.ServeHTTP(w, req)
 	require.NotEqual(ts.T(), http.StatusOK, w.Code)
+}
+
+func (ts *UserTestSuite) TestPasswordIsSetEndpoint() {
+	type testCase struct {
+		name           string
+		email          string
+		phone          string
+		expectedStatus int
+		expectedBody   string // 可以部分匹配 password_is_set 值
+	}
+
+	// TODO: 填写符合要求的测试账号
+	existingEmailWithPassword := "test@example.com"
+	existingEmailNoPassword := "test@example.com"
+	existingPhoneWithPassword := "+1234567890"
+	existingPhoneNoPassword := "+1987654321"
+	nonExistingEmail := "not_exist@example.com"
+	nonExistingPhone := "+1000000000"
+
+	testCases := []testCase{
+		{
+			name:           "email exists and password is set",
+			email:          existingEmailWithPassword,
+			phone:          "",
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"password_is_set":true`,
+		},
+		{
+			name:           "email exists and password is not set",
+			email:          existingEmailNoPassword,
+			phone:          "",
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"password_is_set":false`,
+		},
+		{
+			name:           "phone exists and password is set",
+			email:          "",
+			phone:          existingPhoneWithPassword,
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"password_is_set":true`,
+		},
+		{
+			name:           "phone exists and password is not set",
+			email:          "",
+			phone:          existingPhoneNoPassword,
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"password_is_set":false`,
+		},
+		{
+			name:           "email and phone both empty",
+			email:          "",
+			phone:          "",
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "Either email or phone must be provided",
+		},
+		{
+			name:           "email and phone both provided",
+			email:          existingEmailWithPassword,
+			phone:          existingPhoneWithPassword,
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "Only provide either email or phone, not both",
+		},
+		{
+			name:           "non-existing email",
+			email:          nonExistingEmail,
+			phone:          "",
+			expectedStatus: http.StatusNotFound,
+			expectedBody:   "User not found",
+		},
+		{
+			name:           "non-existing phone",
+			email:          "",
+			phone:          nonExistingPhone,
+			expectedStatus: http.StatusNotFound,
+			expectedBody:   "User not found",
+		},
+	}
+
+	for _, tc := range testCases {
+		ts.T().Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://localhost/user/password/status", nil)
+
+			// 构造 query 参数
+			q := req.URL.Query()
+			if tc.email != "" {
+				q.Add("email", tc.email)
+			}
+			if tc.phone != "" {
+				q.Add("phone", tc.phone)
+			}
+			req.URL.RawQuery = q.Encode()
+
+			w := httptest.NewRecorder()
+			err := ts.API.PasswordIsSet(w, req)
+			require.NoError(t, err, "Handler returned unexpected error")
+			require.Equal(t, tc.expectedStatus, w.Code, "Status code mismatch")
+
+			body := w.Body.String()
+			require.Contains(t, body, tc.expectedBody, "Response body mismatch")
+			// 打印响应方便调试
+			fmt.Printf("[%s] Response Body: %s\n", tc.name, body)
+		})
+	}
+}
+
+func (ts *UserTestSuite) TestUserUpdatePassword1() {
+	// 准备用户
+	userEmail := "test@example.com"
+	user, err := models.FindUserByEmailAndAudience(ts.API.db, userEmail, ts.Config.JWT.Aud)
+	require.NoError(ts.T(), err, "Error finding user")
+
+	token := ts.generateAccessTokenAndSession(user)
+	require.NoError(ts.T(), err, "Error generating access token")
+
+	// 新密码
+	newPassword := "123456"
+
+	reqBody := fmt.Sprintf(`{"password":"%s"}`, newPassword)
+	req := httptest.NewRequest(http.MethodPut, "http://localhost:8081/user", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	ts.API.handler.ServeHTTP(w, req)
+
+	require.Equal(ts.T(), http.StatusOK, w.Code, "Expected 200 OK response")
+
+	// 打印响应体，调试用
+	fmt.Println("Response Body:", w.Body.String())
+
+	// 可选：验证数据库中密码是否被修改
+	dbUser, err := models.FindUserByEmailAndAudience(ts.API.db, userEmail, ts.Config.JWT.Aud)
+	require.NoError(ts.T(), err)
+	require.True(ts.T(), dbUser.HasPassword(), "User should have password set")
+	require.True(ts.T(), dbUser.PasswordIsSet, "PasswordIsSet should be true")
 }

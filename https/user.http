@@ -1,0 +1,25 @@
+### 密码登录,需要传递两种参数，一个url的query参数，一个body的json对象
+POST http://8.152.101.166:9999/token?grant_type=password
+Content-Type: application/json
+#X-JWT-Aud: authenticated
+
+{
+  "email": "1986157816@qq.com",
+  "password": "654321"
+}
+
+
+### 用户是否登录
+GET http://8.152.101.166:9999/user/password/status?email=1986157816@qq.com
+#X-JWT-Aud: authenticated
+
+###
+
+### 修改密码 - 用户存在且已设置密码
+PUT http://8.152.101.166:9999/user
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjNWI5ZjIwNy1jYjcxLTQxNGUtYjI5MC0wOTRhN2Q0Y2EwZjAiLCJhdWQiOiIiLCJleHAiOjE3NjE2NjE4NzcsImlhdCI6MTc2MTY1NDY3NywiZW1haWwiOiIxOTg2MTU3ODE2QHFxLmNvbSIsInBob25lIjoiIiwiYXBwX21ldGFkYXRhIjp7InByb3ZpZGVyIjoiZW1haWwiLCJwcm92aWRlcnMiOlsiZW1haWwiXX0sInVzZXJfbWV0YWRhdGEiOnsiZW1haWwiOiIxOTg2MTU3ODE2QHFxLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJwaG9uZV92ZXJpZmllZCI6ZmFsc2UsInN1YiI6ImM1YjlmMjA3LWNiNzEtNDE0ZS1iMjkwLTA5NGE3ZDRjYTBmMCJ9LCJyb2xlIjoiIiwiYWFsIjoiYWFsMSIsImFtciI6W3sibWV0aG9kIjoicGFzc3dvcmQiLCJ0aW1lc3RhbXAiOjE3NjE2NTQ2Nzd9XSwic2Vzc2lvbl9pZCI6ImZkMTM3ODIwLTBkYmYtNGUxMC04ZmQ2LWM2N2U4NDhmZmUyNiIsImlzX2Fub255bW91cyI6ZmFsc2V9.3QA2k2SCzqXx6zPF8OtQ4qafAc-z1SeFt1CQgy3KT3I
+Content-Type: application/json
+
+{
+  "password": "654321"
+}
