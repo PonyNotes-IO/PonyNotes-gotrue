@@ -17,7 +17,7 @@ type DouYinProvider struct {
 
 const GrantType string = "authorization_code"
 
-// NewDouYinProvider todo 是否需要，多个app使用同一标识
+// NewDouYinProvider
 func NewDouYinProvider(code string, config conf.DouYinProviderConfiguration) (ThirdPartyProvider, error) {
 	// 初始化SDK client
 	opt := new(credential.Config).

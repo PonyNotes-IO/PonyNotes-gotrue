@@ -569,7 +569,7 @@ func (ts *UserTestSuite) TestPasswordIsSetEndpoint() {
 		expectedBody   string // 可以部分匹配 password_is_set 值
 	}
 
-	// TODO: 填写符合要求的测试账号
+	// 填写符合要求的测试账号
 	existingEmailWithPassword := "test@example.com"
 	existingEmailNoPassword := "test@example.com"
 	existingPhoneWithPassword := "+1234567890"
