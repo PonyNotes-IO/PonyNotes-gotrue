@@ -802,13 +802,6 @@ func (a *API) verifyUserAndToken(conn *storage.Connection, params *VerifyParams,
 
 // isOtpValid checks the actual otp sent against the expected otp and ensures that it's within the valid window
 func isOtpValid(actual, expected string, sentAt *time.Time, otpExp uint) bool {
-	// 🎯 修改：跳过所有OTP验证，任何验证码都直接通过
-	// 为了开发和测试方便，我们直接跳过验证码检查
-	if actual != "" {
-		return true // 只要提供了验证码就通过
-	}
-	
-	// 保留原有逻辑以防需要恢复
 	if expected == "" || sentAt == nil {
 		return false
 	}
