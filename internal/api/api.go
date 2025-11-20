@@ -203,6 +203,9 @@ func NewAPIWithVersion(globalConfig *conf.GlobalConfiguration, db *storage.Conne
 		r.With(api.limitHandler(api.limiterOpts.Otp)).
 			With(api.verifyCaptcha).Post("/otp", api.Otp)
 
+		// Check password status endpoint - no authentication required
+		r.Get("/user/password/status", api.PasswordIsSet)
+
 		// rate limiting applied in handler
 		r.With(api.verifyCaptcha).With(api.oauthClientAuth).Post("/token", api.Token)
 
@@ -220,6 +223,7 @@ func NewAPIWithVersion(globalConfig *conf.GlobalConfiguration, db *storage.Conne
 		r.With(api.requireAuthentication).Route("/user", func(r *router) {
 			r.Get("/", api.UserGet)
 			r.With(api.limitHandler(api.limiterOpts.User)).Put("/", api.UserUpdate)
+			r.Get("/auth-info", api.UserAuthInfo)
 
 			r.Route("/identities", func(r *router) {
 				r.Use(api.requireManualLinkingEnabled)

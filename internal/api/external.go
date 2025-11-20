@@ -14,6 +14,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/supabase/auth/internal/api/apierrors"
 	"github.com/supabase/auth/internal/api/provider"
+	tpp "github.com/supabase/auth/internal/api/third_party_provider"
 	"github.com/supabase/auth/internal/conf"
 	"github.com/supabase/auth/internal/metering"
 	"github.com/supabase/auth/internal/models"
@@ -622,8 +623,24 @@ func (a *API) Provider(ctx context.Context, name string, scopes string) (provide
 		return provider.NewWorkOSProvider(config.External.WorkOS)
 	case "zoom":
 		return provider.NewZoomProvider(config.External.Zoom)
+	case "douyin":
+		//return provider.NewDouYinProvider(config.External.DouYin, scopes)
+		return provider.NewDouYinProvider(scopes)
 	default:
 		return nil, fmt.Errorf("Provider %s could not be found", name)
+	}
+}
+
+// ThirdPartyProviderProvider returns a ThirdPartyProviderProvider interface for the given name.
+func (a *API) ThirdPartyProviderProvider(code string, name string) (tpp.ThirdPartyProvider, error) {
+	config := a.config.External.ThirdPartyProvider
+	switch name {
+	case "douyin":
+		return tpp.NewDouYinProvider(code, config.DouYin)
+	case "weixin":
+		return tpp.NewWeiXinProvider(code, config.WeiXin)
+	default:
+		return nil, fmt.Errorf("ThirdPartyProvider %s could not be found", name)
 	}
 }
 

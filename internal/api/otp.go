@@ -165,6 +165,16 @@ func (a *API) SmsOtp(w http.ResponseWriter, r *http.Request) error {
 				return err
 			}
 
+			// Mark that password was not set by user (it's auto-generated for OTP/magic link)
+			user, err = models.FindUserByPhoneAndAudience(db, params.Phone, aud)
+			if err != nil {
+				return apierrors.NewInternalServerError("Database error finding user after signup").WithInternalError(err)
+			}
+			user.PasswordIsSet = false
+			if err := db.UpdateOnly(user, "password_is_set"); err != nil {
+				return apierrors.NewInternalServerError("Database error updating user").WithInternalError(err)
+			}
+
 			signUpParams := &SignupParams{
 				Phone:   params.Phone,
 				Channel: params.Channel,
@@ -181,6 +191,17 @@ func (a *API) SmsOtp(w http.ResponseWriter, r *http.Request) error {
 		if err := a.Signup(fakeResponse, r); err != nil {
 			return err
 		}
+
+		// Mark that password was not set by user (it's auto-generated for OTP/magic link)
+		user, err = models.FindUserByPhoneAndAudience(db, params.Phone, aud)
+		if err != nil {
+			return apierrors.NewInternalServerError("Database error finding user after signup").WithInternalError(err)
+		}
+		user.PasswordIsSet = false
+		if err := db.UpdateOnly(user, "password_is_set"); err != nil {
+			return apierrors.NewInternalServerError("Database error updating user").WithInternalError(err)
+		}
+
 		return sendJSON(w, http.StatusOK, make(map[string]string))
 	}
 

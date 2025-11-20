@@ -1,0 +1,11 @@
+### 密码登录,需要传递两种参数，一个url的query参数，一个body的json对象
+POST http://8.152.101.166:9999/token?grant_type=third_party
+Content-Type: application/json
+#X-JWT-Aud: authenticated
+
+// platform 填入 weixin 或者 douyin
+// code 是sdk对接拿到的临时授权code
+{
+  "platform": "1986157816@qq.com",
+  "code": "654321"
+}

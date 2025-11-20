@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,7 +11,9 @@ import (
 
 	"github.com/gofrs/uuid"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/sethvargo/go-password/password"
 	"github.com/xeipuuv/gojsonschema"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/supabase/auth/internal/api/apierrors"
 	"github.com/supabase/auth/internal/hooks/v0hooks"
@@ -68,6 +71,11 @@ type PasswordGrantParams struct {
 	Password string `json:"password"`
 }
 
+type ThirdPartyParams struct {
+	Platform string `json:"platform"`
+	Code     string `json:"code"`
+}
+
 // PKCEGrantParams are the parameters the PKCEGrant method accepts
 type PKCEGrantParams struct {
 	AuthCode     string `json:"auth_code"`
@@ -88,6 +96,7 @@ func (a *API) Token(w http.ResponseWriter, r *http.Request) error {
 	switch grantType {
 	case "password":
 		// set above
+		return a.ResourceOwnerPasswordGrant(ctx, w, r)
 	case "refresh_token":
 		handler = a.RefreshTokenGrant
 	case "id_token":
@@ -97,6 +106,8 @@ func (a *API) Token(w http.ResponseWriter, r *http.Request) error {
 	case "web3":
 		handler = a.Web3Grant
 		limiter = a.limiterOpts.Web3
+	case "third_party":
+		handler = a.ThirdPartyGrant
 	default:
 		return apierrors.NewBadRequestError(apierrors.ErrorCodeInvalidCredentials, "unsupported_grant_type")
 	}
@@ -156,6 +167,10 @@ func (a *API) ResourceOwnerPasswordGrant(ctx context.Context, w http.ResponseWri
 
 	if !user.HasPassword() {
 		return apierrors.NewBadRequestError(apierrors.ErrorCodeInvalidCredentials, InvalidLoginMessage)
+	}
+
+	if !user.PasswordIsSet {
+		return apierrors.NewBadRequestError(apierrors.ErrorCodePasswordNotSet, "User has not set a password")
 	}
 
 	if user.IsBanned() {
@@ -247,6 +262,110 @@ func (a *API) ResourceOwnerPasswordGrant(ctx context.Context, w http.ResponseWri
 
 	metering.RecordLogin(metering.LoginTypePassword, user.ID, &metering.LoginData{
 		Provider: provider,
+	})
+	return sendJSON(w, http.StatusOK, token)
+}
+
+func (a *API) ThirdPartyGrant(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+	db := a.db.WithContext(ctx)
+
+	params := &ThirdPartyParams{}
+	if err := retrieveRequestParams(r, params); err != nil {
+		return err
+	}
+
+	aud := a.requestAud(ctx, r)
+	config := a.config
+
+	//var user *models.User
+	var grantParams models.GrantParams
+	var err error
+	var user *models.User
+
+	grantParams.FillGrantParams(r)
+
+	provider, err := a.ThirdPartyProviderProvider(params.Code, params.Platform)
+	if err != nil {
+		return err
+	}
+
+	providerId := provider.GetProviderId()
+	identity, err := models.FindIdentityByIdAndProvider(a.db, *providerId, params.Platform)
+	if err != nil {
+		// 如果没找到就是没号
+		if models.IsNotFoundError(err) {
+			userMeta, err := provider.GetUserMeta()
+			if err != nil {
+				return err
+			}
+			newPassword, err := password.Generate(64, 10, 1, false, true)
+			if err != nil {
+				return apierrors.NewInternalServerError("Error generating password").WithInternalError(err)
+			}
+			user, err = models.NewUser("", "", newPassword, aud, nil)
+			if err != nil {
+				if errors.Is(err, bcrypt.ErrPasswordTooLong) {
+					return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, err.Error())
+				}
+				return apierrors.NewInternalServerError("Error creating user").WithInternalError(err)
+			}
+			user.IsSSOUser = true
+			user.UserMetaData = userMeta
+			user.PasswordIsSet = false
+
+			identity, err := models.NewIdentity(user, params.Platform, userMeta)
+			if err != nil {
+				return apierrors.NewInternalServerError("new identity fail.").WithInternalError(err)
+			}
+			err = a.db.Transaction(func(tx *storage.Connection) error {
+				if terr := tx.Save(user); terr != nil {
+					return terr
+				}
+				if terr := tx.Save(identity); terr != nil {
+					return terr
+				}
+				return nil
+			})
+			if err != nil {
+				return apierrors.NewInternalServerError("Database operation failed during account creation.").WithInternalError(err)
+			}
+		} else {
+			// 报错了
+			return apierrors.NewInternalServerError("Database error querying schema").WithInternalError(err)
+		}
+	} else {
+		// 有号
+		user, err = models.FindUserByID(a.db, identity.UserID)
+		if err != nil {
+			if models.IsNotFoundError(err) {
+				return apierrors.NewInternalServerError("Incomplete account data; no corresponding user found.").WithInternalError(err)
+
+			}
+			return apierrors.NewInternalServerError("Database error querying schema").WithInternalError(err)
+		}
+	}
+
+	var token *AccessTokenResponse
+	err = db.Transaction(func(tx *storage.Connection) error {
+		var terr error
+		if terr = models.NewAuditLogEntry(config.AuditLog, r, tx, user, models.LoginAction, "", map[string]interface{}{
+			"provider": params.Platform,
+		}); terr != nil {
+			return terr
+		}
+		token, terr = a.issueRefreshToken(r, tx, user, models.PasswordGrant, grantParams)
+		if terr != nil {
+			return terr
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	metering.RecordLogin(metering.LoginTypePassword, user.ID, &metering.LoginData{
+		Provider: params.Platform,
 	})
 	return sendJSON(w, http.StatusOK, token)
 }
