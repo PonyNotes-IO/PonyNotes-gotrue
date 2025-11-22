@@ -34,7 +34,12 @@ require (
 )
 
 require (
+	github.com/alibabacloud-go/debug v1.0.0 // indirect
+	github.com/alibabacloud-go/tea v1.2.2 // indirect
 	github.com/bits-and-blooms/bitset v1.20.0 // indirect
+	github.com/bytedance/douyin-openapi-credential-go v0.0.0-20240627133153-7f4587ca06ce // indirect
+	github.com/bytedance/douyin-openapi-sdk-go v1.0.3 // indirect
+	github.com/bytedance/douyin-openapi-util-go v0.0.0-20240627134255-db766d8741c8 // indirect
 	github.com/consensys/gnark-crypto v0.18.0 // indirect
 	github.com/crate-crypto/go-eth-kzg v1.3.0 // indirect
 	github.com/crate-crypto/go-ipa v0.0.0-20240724233137-53bbb0ceb27a // indirect
@@ -47,6 +52,7 @@ require (
 	github.com/go-jose/go-jose/v3 v3.0.4 // indirect
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect
 	github.com/go-openapi/swag v0.23.0 // indirect
+	github.com/go-resty/resty/v2 v2.12.0 // indirect
 	github.com/go-webauthn/x v0.1.12 // indirect
 	github.com/gobuffalo/nulls v0.4.2 // indirect
 	github.com/goccy/go-json v0.10.4 // indirect
@@ -54,12 +60,15 @@ require (
 	github.com/holiman/uint256 v1.3.2 // indirect
 	github.com/jackc/pgx/v4 v4.18.2 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
+	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.2 // indirect
 	github.com/lestrrat-go/httpcc v1.0.1 // indirect
 	github.com/lestrrat-go/httprc v1.0.5 // indirect
 	github.com/lestrrat-go/iter v1.0.2 // indirect
 	github.com/lestrrat-go/option v1.0.1 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
+	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
+	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 // indirect
 	github.com/oasdiff/yaml v0.0.0-20250309154309-f31be36b4037 // indirect
 	github.com/oasdiff/yaml3 v0.0.0-20250309153720-d2182401db90 // indirect
