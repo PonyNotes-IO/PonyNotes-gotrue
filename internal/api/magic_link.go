@@ -155,7 +155,8 @@ func (a *API) MagicLink(w http.ResponseWriter, r *http.Request) error {
 				return apierrors.NewInternalServerError("Database error finding user after signup").WithInternalError(err)
 			}
 			user.PasswordIsSet = false
-			if err := db.UpdateOnly(user, "password_set_by_user"); err != nil {
+			// 字段已统一为 password_is_set，这里只更新该列
+			if err := db.UpdateOnly(user, "password_is_set"); err != nil {
 				return apierrors.NewInternalServerError("Database error updating user").WithInternalError(err)
 			}
 
@@ -184,7 +185,8 @@ func (a *API) MagicLink(w http.ResponseWriter, r *http.Request) error {
 			return apierrors.NewInternalServerError("Database error finding user after signup").WithInternalError(err)
 		}
 		user.PasswordIsSet = false
-		if err := db.UpdateOnly(user, "password_set_by_user"); err != nil {
+		// 字段已统一为 password_is_set，这里只更新该列
+		if err := db.UpdateOnly(user, "password_is_set"); err != nil {
 			return apierrors.NewInternalServerError("Database error updating user").WithInternalError(err)
 		}
 
