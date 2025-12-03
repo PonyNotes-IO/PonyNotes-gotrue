@@ -383,18 +383,32 @@ func (a *API) UserUpdate(w http.ResponseWriter, r *http.Request) error {
 		}
 
 		if params.Phone != "" && params.Phone != user.GetPhone() {
+			logEntry := getLogEntry(r)
+			logEntry.WithFields(logrus.Fields{
+				"newPhone":    params.Phone,
+				"oldPhone":    user.GetPhone(),
+				"autoconfirm": config.Sms.Autoconfirm,
+				"channel":     params.Channel,
+			}).Info("📱 [UserUpdate] Phone change detected")
+			
 			if config.Sms.Autoconfirm {
+				logEntry.Info("📱 [UserUpdate] Using autoconfirm mode")
 				user.PhoneChange = params.Phone
 				if _, terr := a.smsVerify(r, tx, user, &VerifyParams{
 					Type:  phoneChangeVerification,
 					Phone: params.Phone,
 				}); terr != nil {
+					logEntry.WithError(terr).Error("📱 [UserUpdate] smsVerify failed")
 					return terr
 				}
+				logEntry.Info("📱 [UserUpdate] Phone autoconfirmed successfully")
 			} else {
+				logEntry.Info("📱 [UserUpdate] Sending phone confirmation SMS")
 				if _, terr := a.sendPhoneConfirmation(r, tx, user, params.Phone, phoneChangeVerification, params.Channel); terr != nil {
+					logEntry.WithError(terr).Error("📱 [UserUpdate] sendPhoneConfirmation failed")
 					return terr
 				}
+				logEntry.Info("📱 [UserUpdate] Phone confirmation SMS sent successfully")
 			}
 		}
 

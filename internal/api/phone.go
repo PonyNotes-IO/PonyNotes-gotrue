@@ -45,6 +45,14 @@ func formatPhoneNumber(phone string) string {
 // sendPhoneConfirmation sends an otp to the user's phone number
 func (a *API) sendPhoneConfirmation(r *http.Request, tx *storage.Connection, user *models.User, phone, otpType string, channel string) (string, error) {
 	config := a.config
+	
+	logEntry := getLogEntry(r)
+	logEntry.WithFields(logrus.Fields{
+		"phone":   phone,
+		"otpType": otpType,
+		"channel": channel,
+		"userId":  user.ID,
+	}).Info("📱 [sendPhoneConfirmation] START - Sending phone confirmation")
 
 	var token *string
 	var sentAt *time.Time
@@ -56,14 +64,17 @@ func (a *API) sendPhoneConfirmation(r *http.Request, tx *storage.Connection, use
 		sentAt = user.PhoneChangeSentAt
 		user.PhoneChange = phone
 		includeFields = append(includeFields, "phone_change", "phone_change_token", "phone_change_sent_at")
+		logEntry.Info("📱 [sendPhoneConfirmation] Type: phoneChangeVerification")
 	case phoneConfirmationOtp:
 		token = &user.ConfirmationToken
 		sentAt = user.ConfirmationSentAt
 		includeFields = append(includeFields, "confirmation_token", "confirmation_sent_at")
+		logEntry.Info("📱 [sendPhoneConfirmation] Type: phoneConfirmationOtp")
 	case phoneReauthenticationOtp:
 		token = &user.ReauthenticationToken
 		sentAt = user.ReauthenticationSentAt
 		includeFields = append(includeFields, "reauthentication_token", "reauthentication_sent_at")
+		logEntry.Info("📱 [sendPhoneConfirmation] Type: phoneReauthenticationOtp")
 	default:
 		return "", apierrors.NewInternalServerError("invalid otp type")
 	}
@@ -85,6 +96,7 @@ func (a *API) sendPhoneConfirmation(r *http.Request, tx *storage.Connection, use
 
 	// not using test OTPs
 	if otp == "" {
+		logEntry.Info("📱 [sendPhoneConfirmation] Generating OTP...")
 		// TODO(km): Deprecate this behaviour - rate limits should still be applied to autoconfirm
 		if !config.Sms.Autoconfirm {
 			// apply rate limiting before the sms is sent out
@@ -93,8 +105,10 @@ func (a *API) sendPhoneConfirmation(r *http.Request, tx *storage.Connection, use
 			}
 		}
 		otp = crypto.GenerateOtp(config.Sms.OtpLength)
+		logEntry.WithField("otpLength", len(otp)).Info("📱 [sendPhoneConfirmation] OTP generated")
 
 		if config.Hook.SendSMS.Enabled {
+			logEntry.Info("📱 [sendPhoneConfirmation] Using SendSMS hook")
 			input := v0hooks.SendSMSInput{
 				User: user,
 				SMS: v0hooks.SMS{
@@ -104,22 +118,33 @@ func (a *API) sendPhoneConfirmation(r *http.Request, tx *storage.Connection, use
 			output := v0hooks.SendSMSOutput{}
 			err := a.hooksMgr.InvokeHook(tx, r, &input, &output)
 			if err != nil {
+				logEntry.WithError(err).Error("📱 [sendPhoneConfirmation] Hook failed")
 				return "", err
 			}
+			logEntry.Info("📱 [sendPhoneConfirmation] Hook succeeded")
 		} else {
+			logEntry.Info("📱 [sendPhoneConfirmation] Using SMS provider")
 			smsProvider, err := sms_provider.GetSmsProvider(*config)
 			if err != nil {
+				logEntry.WithError(err).Error("📱 [sendPhoneConfirmation] Failed to get SMS provider")
 				return "", apierrors.NewInternalServerError("Unable to get SMS provider").WithInternalError(err)
 			}
+			logEntry.Info("📱 [sendPhoneConfirmation] SMS provider obtained")
 			message, err := generateSMSFromTemplate(config.Sms.SMSTemplate, otp)
 			if err != nil {
+				logEntry.WithError(err).Error("📱 [sendPhoneConfirmation] Failed to generate SMS template")
 				return "", apierrors.NewInternalServerError("error generating sms template").WithInternalError(err)
 			}
+			logEntry.WithField("message", message).Info("📱 [sendPhoneConfirmation] Sending SMS...")
 			messageID, err := smsProvider.SendMessage(phone, message, channel, otp)
 			if err != nil {
+				logEntry.WithError(err).Error("📱 [sendPhoneConfirmation] Failed to send SMS")
 				return messageID, apierrors.NewUnprocessableEntityError(apierrors.ErrorCodeSMSSendFailed, "Error sending %s OTP to provider: %v", otpType, err)
 			}
+			logEntry.WithField("messageID", messageID).Info("📱 [sendPhoneConfirmation] SMS sent successfully!")
 		}
+	} else {
+		logEntry.WithField("otp", otp).Info("📱 [sendPhoneConfirmation] Using test OTP")
 	}
 
 	*token = crypto.GenerateTokenHash(phone, otp)
