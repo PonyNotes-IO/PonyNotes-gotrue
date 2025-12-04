@@ -735,7 +735,7 @@ func (a *API) verifyUserAndToken(conn *storage.Connection, params *VerifyParams,
 	switch params.Type {
 	case phoneChangeVerification:
 		user, err = models.FindUserByPhoneChangeAndAudience(conn, params.Phone, aud)
-	case smsVerification:
+	case smsVerification, "reauthentication":
 		user, err = models.FindUserByPhoneAndAudience(conn, params.Phone, aud)
 	case mail.EmailChangeVerification:
 		// Since the email change could be trigger via the implicit or PKCE flow,
@@ -778,7 +778,7 @@ func (a *API) verifyUserAndToken(conn *storage.Connection, params *VerifyParams,
 	case mail.EmailChangeVerification:
 		isValid = isOtpValid(tokenHash, user.EmailChangeTokenCurrent, user.EmailChangeSentAt, config.Mailer.OtpExp) ||
 			isOtpValid(tokenHash, user.EmailChangeTokenNew, user.EmailChangeSentAt, config.Mailer.OtpExp)
-	case phoneChangeVerification, smsVerification:
+	case phoneChangeVerification, smsVerification, "reauthentication":
 		if testOTP, ok := config.Sms.GetTestOTP(params.Phone, time.Now()); ok {
 			if params.Token == testOTP {
 				return user, nil
@@ -792,6 +792,10 @@ func (a *API) verifyUserAndToken(conn *storage.Connection, params *VerifyParams,
 			phone = user.PhoneChange
 			sentAt = user.PhoneChangeSentAt
 			expectedToken = user.PhoneChangeToken
+		} else if params.Type == "reauthentication" {
+			// For reauthentication, use the reauthentication token
+			sentAt = user.ReauthenticationSentAt
+			expectedToken = user.ReauthenticationToken
 		}
 
 		if !config.Hook.SendSMS.Enabled && config.Sms.IsTwilioVerifyProvider() {
