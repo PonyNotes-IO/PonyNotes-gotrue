@@ -8,10 +8,12 @@ import (
 	"time"
 
 	"github.com/gofrs/uuid"
+	"github.com/sirupsen/logrus"
 	"github.com/supabase/auth/internal/api/apierrors"
 	"github.com/supabase/auth/internal/api/sms_provider"
 	"github.com/supabase/auth/internal/mailer"
 	"github.com/supabase/auth/internal/models"
+	"github.com/supabase/auth/internal/observability"
 	"github.com/supabase/auth/internal/storage"
 )
 
@@ -382,8 +384,8 @@ func (a *API) UserUpdate(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 
-		if params.Phone != "" {
-			logEntry := getLogEntry(r)
+		if params.Phone != "" && params.Phone != user.GetPhone() {
+			logEntry := observability.GetLogEntry(r).Entry
 			logEntry.WithFields(logrus.Fields{
 				"requestPhone": params.Phone,
 				"currentPhone": user.GetPhone(),

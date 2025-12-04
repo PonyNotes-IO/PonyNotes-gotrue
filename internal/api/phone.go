@@ -9,11 +9,13 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	"github.com/supabase/auth/internal/api/apierrors"
 	"github.com/supabase/auth/internal/api/sms_provider"
 	"github.com/supabase/auth/internal/crypto"
 	"github.com/supabase/auth/internal/hooks/v0hooks"
 	"github.com/supabase/auth/internal/models"
+	"github.com/supabase/auth/internal/observability"
 	"github.com/supabase/auth/internal/storage"
 )
 
@@ -46,7 +48,7 @@ func formatPhoneNumber(phone string) string {
 func (a *API) sendPhoneConfirmation(r *http.Request, tx *storage.Connection, user *models.User, phone, otpType string, channel string) (string, error) {
 	config := a.config
 	
-	logEntry := getLogEntry(r)
+	logEntry := observability.GetLogEntry(r).Entry
 	logEntry.WithFields(logrus.Fields{
 		"phone":   phone,
 		"otpType": otpType,
