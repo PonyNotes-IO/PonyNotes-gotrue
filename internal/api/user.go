@@ -382,33 +382,47 @@ func (a *API) UserUpdate(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 
-		if params.Phone != "" && params.Phone != user.GetPhone() {
+		if params.Phone != "" {
 			logEntry := getLogEntry(r)
 			logEntry.WithFields(logrus.Fields{
-				"newPhone":    params.Phone,
-				"oldPhone":    user.GetPhone(),
-				"autoconfirm": config.Sms.Autoconfirm,
-				"channel":     params.Channel,
-			}).Info("📱 [UserUpdate] Phone change detected")
+				"requestPhone": params.Phone,
+				"currentPhone": user.GetPhone(),
+				"autoconfirm":  config.Sms.Autoconfirm,
+				"channel":      params.Channel,
+			}).Info("📱 [UserUpdate] Phone update/verification request")
 			
-			if config.Sms.Autoconfirm {
-				logEntry.Info("📱 [UserUpdate] Using autoconfirm mode")
-				user.PhoneChange = params.Phone
-				if _, terr := a.smsVerify(r, tx, user, &VerifyParams{
-					Type:  phoneChangeVerification,
-					Phone: params.Phone,
-				}); terr != nil {
-					logEntry.WithError(terr).Error("📱 [UserUpdate] smsVerify failed")
+			// 允许给当前手机号发送验证码（用于身份验证）
+			// 或者给新手机号发送验证码（用于换绑）
+			if params.Phone == user.GetPhone() {
+				// 给当前手机号发送验证码（身份验证场景）
+				logEntry.Info("📱 [UserUpdate] Sending verification code to current phone")
+				if _, terr := a.sendPhoneConfirmation(r, tx, user, params.Phone, phoneReauthenticationOtp, params.Channel); terr != nil {
+					logEntry.WithError(terr).Error("📱 [UserUpdate] Failed to send verification code")
 					return terr
 				}
-				logEntry.Info("📱 [UserUpdate] Phone autoconfirmed successfully")
+				logEntry.Info("📱 [UserUpdate] Verification code sent to current phone successfully")
 			} else {
-				logEntry.Info("📱 [UserUpdate] Sending phone confirmation SMS")
-				if _, terr := a.sendPhoneConfirmation(r, tx, user, params.Phone, phoneChangeVerification, params.Channel); terr != nil {
-					logEntry.WithError(terr).Error("📱 [UserUpdate] sendPhoneConfirmation failed")
-					return terr
+				// 给新手机号发送验证码（换绑场景）
+				logEntry.Info("📱 [UserUpdate] Phone change detected - sending code to new phone")
+				if config.Sms.Autoconfirm {
+					logEntry.Info("📱 [UserUpdate] Using autoconfirm mode")
+					user.PhoneChange = params.Phone
+					if _, terr := a.smsVerify(r, tx, user, &VerifyParams{
+						Type:  phoneChangeVerification,
+						Phone: params.Phone,
+					}); terr != nil {
+						logEntry.WithError(terr).Error("📱 [UserUpdate] smsVerify failed")
+						return terr
+					}
+					logEntry.Info("📱 [UserUpdate] Phone autoconfirmed successfully")
+				} else {
+					logEntry.Info("📱 [UserUpdate] Sending phone confirmation SMS to new phone")
+					if _, terr := a.sendPhoneConfirmation(r, tx, user, params.Phone, phoneChangeVerification, params.Channel); terr != nil {
+						logEntry.WithError(terr).Error("📱 [UserUpdate] sendPhoneConfirmation failed")
+						return terr
+					}
+					logEntry.Info("📱 [UserUpdate] Phone confirmation SMS sent to new phone successfully")
 				}
-				logEntry.Info("📱 [UserUpdate] Phone confirmation SMS sent successfully")
 			}
 		}
 
