@@ -54,7 +54,7 @@ func (a *API) sendPhoneConfirmation(r *http.Request, tx *storage.Connection, use
 		"otpType": otpType,
 		"channel": channel,
 		"userId":  user.ID,
-	}).Info("📱 [sendPhoneConfirmation] START - Sending phone confirmation")
+	}).Info("[SEND_PHONE_CONFIRMATION] START - Sending phone confirmation")
 
 	var token *string
 	var sentAt *time.Time
@@ -66,17 +66,17 @@ func (a *API) sendPhoneConfirmation(r *http.Request, tx *storage.Connection, use
 		sentAt = user.PhoneChangeSentAt
 		user.PhoneChange = phone
 		includeFields = append(includeFields, "phone_change", "phone_change_token", "phone_change_sent_at")
-		logEntry.Info("📱 [sendPhoneConfirmation] Type: phoneChangeVerification")
+		logEntry.Info("[SEND_PHONE_CONFIRMATION] Type: phoneChangeVerification")
 	case phoneConfirmationOtp:
 		token = &user.ConfirmationToken
 		sentAt = user.ConfirmationSentAt
 		includeFields = append(includeFields, "confirmation_token", "confirmation_sent_at")
-		logEntry.Info("📱 [sendPhoneConfirmation] Type: phoneConfirmationOtp")
+		logEntry.Info("[SEND_PHONE_CONFIRMATION] Type: phoneConfirmationOtp")
 	case phoneReauthenticationOtp:
 		token = &user.ReauthenticationToken
 		sentAt = user.ReauthenticationSentAt
 		includeFields = append(includeFields, "reauthentication_token", "reauthentication_sent_at")
-		logEntry.Info("📱 [sendPhoneConfirmation] Type: phoneReauthenticationOtp")
+		logEntry.Info("[SEND_PHONE_CONFIRMATION] Type: phoneReauthenticationOtp")
 	default:
 		return "", apierrors.NewInternalServerError("invalid otp type")
 	}
