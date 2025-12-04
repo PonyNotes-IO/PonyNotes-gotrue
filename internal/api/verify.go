@@ -466,6 +466,15 @@ func (a *API) smsVerify(r *http.Request, conn *storage.Connection, user *models.
 			if terr := user.ConfirmPhone(tx); terr != nil {
 				return apierrors.NewInternalServerError("Error confirming user").WithInternalError(terr)
 			}
+		} else if params.Type == "reauthentication" {
+			// For reauthentication, we just verify the OTP without changing anything
+			// The OTP verification is already done in verifyUserAndToken
+			// We just need to record an audit log entry
+			if terr := models.NewAuditLogEntry(config.AuditLog, r, tx, user, models.UserModifiedAction, "", map[string]interface{}{
+				"action": "phone_reauthentication",
+			}); terr != nil {
+				return terr
+			}
 		} else if params.Type == phoneChangeVerification {
 			if terr := models.NewAuditLogEntry(config.AuditLog, r, tx, user, models.UserModifiedAction, "", nil); terr != nil {
 				return terr
