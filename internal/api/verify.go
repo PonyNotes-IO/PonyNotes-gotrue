@@ -316,7 +316,7 @@ func (a *API) verifyPost(w http.ResponseWriter, r *http.Request, params *VerifyP
 				isSingleConfirmationResponse = true
 				return nil
 			}
-		case smsVerification, phoneChangeVerification:
+		case smsVerification, phoneChangeVerification, "reauthentication":
 			user, terr = a.smsVerify(r, tx, user, params)
 		default:
 			return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Unsupported verification type")
@@ -353,7 +353,7 @@ func (a *API) verifyPost(w http.ResponseWriter, r *http.Request, params *VerifyP
 
 	// Record login for analytics - determine provider based on verification type
 	provider := metering.ProviderEmail // default
-	if params.Type == smsVerification || params.Type == phoneChangeVerification {
+	if params.Type == smsVerification || params.Type == phoneChangeVerification || params.Type == "reauthentication" {
 		provider = metering.ProviderPhone
 	}
 	metering.RecordLogin(metering.LoginTypeOTP, user.ID, &metering.LoginData{
