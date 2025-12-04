@@ -292,6 +292,14 @@ func (a *API) UserUpdate(w http.ResponseWriter, r *http.Request) error {
 			return apierrors.NewUnprocessableEntityError(apierrors.ErrorCodePhoneExists, DuplicatePhoneMsg)
 		}
 	}
+	
+	// DEBUG: Log phone parameter before transaction
+	logEntry := observability.GetLogEntry(r).Entry
+	logEntry.WithFields(logrus.Fields{
+		"params.Phone": params.Phone,
+		"user.Phone":   user.GetPhone(),
+		"params.Channel": params.Channel,
+	}).Info("[DEBUG] Before transaction - phone params")
 
 	if params.Password != nil {
 		if config.Security.UpdatePasswordRequireReauthentication {
