@@ -30,5 +30,18 @@ services:
       - POSTGRES_DB=postgres
       # sets the schema name, this should match the `NAMESPACE` env var set in your .env file
       - DB_NAMESPACE=auth
+  callback-service:
+    build:
+      context: ./callback-service
+      dockerfile: Dockerfile
+    container_name: callback-service
+    ports:
+      - '7000:7000'
+    environment:
+      - PORT=7000
+      # optional: set to a known state for CSRF protection; leave empty to skip check
+      - WECHAT_ALLOWED_STATE=
+      # optional: custom scheme to hand code back to desktop app; leave empty to return JSON
+      - WECHAT_CLIENT_SCHEME=appflowy://wechat-callback
 volumes:
   postgres_data:
