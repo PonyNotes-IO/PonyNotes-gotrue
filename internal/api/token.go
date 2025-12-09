@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofrs/uuid"
@@ -290,13 +291,22 @@ func (a *API) ThirdPartyGrant(ctx context.Context, w http.ResponseWriter, r *htt
 	}
 
 	providerId := provider.GetProviderId()
-	identity, err := models.FindIdentityByIdAndProvider(a.db, *providerId, params.Platform)
+	if providerId == nil || strings.TrimSpace(*providerId) == "" {
+		return apierrors.NewInternalServerError("Third party provider id is missing").WithInternalError(errors.New("empty provider id from third party provider"))
+	}
+	providerIdValue := strings.TrimSpace(*providerId)
+
+	identity, err := models.FindIdentityByIdAndProvider(a.db, providerIdValue, params.Platform)
 	if err != nil {
 		// 如果没找到就是没号
 		if models.IsNotFoundError(err) {
 			userMeta, err := provider.GetUserMeta()
 			if err != nil {
 				return err
+			}
+			// Satisfy NewIdentity requirement: ensure provider id exists as "sub"
+			if _, ok := userMeta["sub"]; !ok {
+				userMeta["sub"] = providerIdValue
 			}
 			newPassword, err := password.Generate(64, 10, 1, false, true)
 			if err != nil {
