@@ -328,11 +328,17 @@ func (a *API) ThirdPartyGrant(ctx context.Context, w http.ResponseWriter, r *htt
 				return apierrors.NewInternalServerError("new identity fail.").WithInternalError(err)
 			}
 			err = a.db.Transaction(func(tx *storage.Connection) error {
-				if terr := tx.Save(user); terr != nil {
-					return terr
+				// 使用 Create 而不是 Save，确保正确创建新记录
+				if terr := tx.Create(user); terr != nil {
+					return apierrors.NewInternalServerError("Database error saving new user").WithInternalError(terr)
 				}
-				if terr := tx.Save(identity); terr != nil {
-					return terr
+				// 设置用户角色
+				if terr := user.SetRole(tx, config.JWT.DefaultGroupName); terr != nil {
+					return apierrors.NewInternalServerError("Database error updating user role").WithInternalError(terr)
+				}
+				// 创建 identity
+				if terr := tx.Create(identity); terr != nil {
+					return apierrors.NewInternalServerError("Error creating identity").WithInternalError(terr)
 				}
 				return nil
 			})
