@@ -907,6 +907,25 @@ func loadGlobal(config *GlobalConfiguration) error {
 }
 
 func populateGlobal(config *GlobalConfiguration) error {
+	// 兼容处理：如果新配置（WEI_XIN）为空，尝试从旧配置（WEIXIN）读取
+	// 同时检查环境变量是否真的被读取到了
+	if config.External.ThirdPartyProvider.WeiXin.ClientKey == "" || config.External.ThirdPartyProvider.WeiXin.ClientSecret == "" {
+		// 先尝试从正确的环境变量名读取（如果 envconfig 没有读取到）
+		if newClientKey := os.Getenv("GOTRUE_EXTERNAL_THIRD_PARTY_WEI_XIN_CLIENT_ID"); newClientKey != "" && config.External.ThirdPartyProvider.WeiXin.ClientKey == "" {
+			config.External.ThirdPartyProvider.WeiXin.ClientKey = newClientKey
+		}
+		if newClientSecret := os.Getenv("GOTRUE_EXTERNAL_THIRD_PARTY_WEI_XIN_CLIENT_SECRET"); newClientSecret != "" && config.External.ThirdPartyProvider.WeiXin.ClientSecret == "" {
+			config.External.ThirdPartyProvider.WeiXin.ClientSecret = newClientSecret
+		}
+		// 兼容旧配置（WEIXIN 没有下划线）
+		if oldClientKey := os.Getenv("GOTRUE_EXTERNAL_THIRD_PARTY_WEIXIN_CLIENT_ID"); oldClientKey != "" && config.External.ThirdPartyProvider.WeiXin.ClientKey == "" {
+			config.External.ThirdPartyProvider.WeiXin.ClientKey = oldClientKey
+		}
+		if oldClientSecret := os.Getenv("GOTRUE_EXTERNAL_THIRD_PARTY_WEIXIN_CLIENT_SECRET"); oldClientSecret != "" && config.External.ThirdPartyProvider.WeiXin.ClientSecret == "" {
+			config.External.ThirdPartyProvider.WeiXin.ClientSecret = oldClientSecret
+		}
+	}
+
 	if config.Hook.PasswordVerificationAttempt.Enabled {
 		if err := config.Hook.PasswordVerificationAttempt.PopulateExtensibilityPoint(); err != nil {
 			return err

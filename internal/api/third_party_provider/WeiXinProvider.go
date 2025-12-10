@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/supabase/auth/internal/conf"
 )
@@ -56,8 +57,13 @@ func NewWeiXinProvider(code string, config conf.WeiXinProviderConfiguration) (Th
 }
 
 // GetProviderId 返回微信unionid，作为唯一provider id
+// 如果unionid为空，则使用openid作为fallback
 func (w *WeiXinProvider) GetProviderId() *string {
-	return &w.UnionId
+	if strings.TrimSpace(w.UnionId) != "" {
+		return &w.UnionId
+	}
+	// 如果unionid为空，使用openid作为provider id
+	return &w.OpenId
 }
 
 // GetUserMeta 获取用户详细信息，并格式化为map供userMeta落库
@@ -89,10 +95,21 @@ func (w *WeiXinProvider) GetUserMeta() (map[string]any, error) {
 
 	// 填充到结构体
 	w.UserInfo = &userInfo
+	// 更新UnionId（如果用户信息中有的话）
+	if userInfo.UnionId != "" {
+		w.UnionId = userInfo.UnionId
+	}
+	
+	// 确定provider id（优先使用unionid，如果为空则使用openid）
+	providerId := w.OpenId
+	if strings.TrimSpace(w.UnionId) != "" {
+		providerId = w.UnionId
+	}
+	
 	// 构建userMeta，后续可根据业务拓展
 	userMeta := map[string]any{
+		"sub":       providerId, // 设置sub字段，用于NewIdentity
 		"openid":    userInfo.OpenId,
-		"unionid":   userInfo.UnionId,
 		"nickname":  userInfo.Nickname,
 		"avatar":    userInfo.HeadImgUrl,
 		"province":  userInfo.Province,
