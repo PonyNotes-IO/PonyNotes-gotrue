@@ -41,7 +41,9 @@ services:
       - PORT=7000
       # optional: set to a known state for CSRF protection; leave empty to skip check
       - WECHAT_ALLOWED_STATE=
+      - DOUYIN_ALLOWED_STATE=
       # optional: custom scheme to hand code back to desktop app; leave empty to return JSON
       - WECHAT_CLIENT_SCHEME=appflowy://wechat-callback
+      - DOUYIN_CLIENT_SCHEME=appflowy://douyin-callback
 volumes:
   postgres_data:

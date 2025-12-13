@@ -926,6 +926,16 @@ func populateGlobal(config *GlobalConfiguration) error {
 		}
 	}
 
+	// 兼容处理：抖音配置，如果 envconfig 没有读取到，直接从环境变量读取
+	if config.External.ThirdPartyProvider.DouYin.ClientKey == "" || config.External.ThirdPartyProvider.DouYin.ClientSecret == "" {
+		if douyinClientKey := os.Getenv("GOTRUE_EXTERNAL_THIRD_PARTY_DOU_YIN_CLIENT_ID"); douyinClientKey != "" && config.External.ThirdPartyProvider.DouYin.ClientKey == "" {
+			config.External.ThirdPartyProvider.DouYin.ClientKey = douyinClientKey
+		}
+		if douyinClientSecret := os.Getenv("GOTRUE_EXTERNAL_THIRD_PARTY_DOU_YIN_CLIENT_SECRET"); douyinClientSecret != "" && config.External.ThirdPartyProvider.DouYin.ClientSecret == "" {
+			config.External.ThirdPartyProvider.DouYin.ClientSecret = douyinClientSecret
+		}
+	}
+
 	if config.Hook.PasswordVerificationAttempt.Enabled {
 		if err := config.Hook.PasswordVerificationAttempt.PopulateExtensibilityPoint(); err != nil {
 			return err

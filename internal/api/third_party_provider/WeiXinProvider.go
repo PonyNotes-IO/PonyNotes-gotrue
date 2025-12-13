@@ -60,7 +60,7 @@ func NewWeiXinProvider(code string, config conf.WeiXinProviderConfiguration) (Th
 // 如果unionid为空，则使用openid作为fallback
 func (w *WeiXinProvider) GetProviderId() *string {
 	if strings.TrimSpace(w.UnionId) != "" {
-		return &w.UnionId
+	return &w.UnionId
 	}
 	// 如果unionid为空，使用openid作为provider id
 	return &w.OpenId

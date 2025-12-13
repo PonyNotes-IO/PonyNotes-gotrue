@@ -83,6 +83,16 @@ func (p *DouYinProvider) GetUserMeta() (map[string]any, error) {
 		return nil, err
 	}
 
+	// 确保 userMeta 包含 "sub" 字段（用于 NewIdentity）
+	// 使用 AlliedId 作为 sub（这是抖音的唯一标识）
+	providerId := p.GetProviderId()
+	if providerId != nil && *providerId != "" {
+		result["sub"] = *providerId
+	} else if p.OAuthAccessToken.OpenId != nil {
+		// 如果 AlliedId 为空，使用 OpenId 作为 fallback
+		result["sub"] = *p.OAuthAccessToken.OpenId
+	}
+
 	return result, nil
 }
 
