@@ -38,7 +38,7 @@ func NewDouYinProvider(code string, config conf.DouYinProviderConfiguration) (Th
 	if err != nil {
 		return nil, errors.New("抖音 OAuthAccessToken 调用失败: " + err.Error())
 	}
-	
+
 	// 检查 OAuthAccessToken 响应
 	if OAuthAccessToken == nil || OAuthAccessToken.Data == nil {
 		return nil, errors.New("抖音 OAuthAccessToken 响应为空")
@@ -88,7 +88,7 @@ func NewDouYinProvider(code string, config conf.DouYinProviderConfiguration) (Th
 func (p *DouYinProvider) GetProviderId() *string {
 	// 优先使用 AlliedId（如果 V1AuthGetRelatedId 调用成功）
 	if p.V1AuthGetRelatedId != nil && p.V1AuthGetRelatedId.AlliedId != nil && *p.V1AuthGetRelatedId.AlliedId != "" {
-		return p.V1AuthGetRelatedId.AlliedId
+	return p.V1AuthGetRelatedId.AlliedId
 	}
 	// Fallback: 使用 OpenId 作为 provider id
 	if p.OAuthAccessToken != nil && p.OAuthAccessToken.OpenId != nil {
@@ -147,7 +147,7 @@ func (p *DouYinProvider) GetUserMeta() (map[string]any, error) {
 	}
 
 	// 确保 result 包含 "sub" 字段
-	result["sub"] = *providerId
+		result["sub"] = *providerId
 
 	return result, nil
 }

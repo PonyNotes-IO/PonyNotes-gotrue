@@ -269,11 +269,12 @@ func (a *API) UserUpdate(w http.ResponseWriter, r *http.Request) error {
 
 		updatingForbiddenFields = updatingForbiddenFields || (params.Password != nil && *params.Password != "")
 		updatingForbiddenFields = updatingForbiddenFields || (params.Email != "" && params.Email != user.GetEmail())
-		updatingForbiddenFields = updatingForbiddenFields || (params.Phone != "" && params.Phone != user.GetPhone())
+		// Allow SSO users to bind/change phone via the normal phone_change flow.
+		// We still forbid updating email/password/nonce for SSO-managed accounts.
 		updatingForbiddenFields = updatingForbiddenFields || (params.Nonce != "")
 
 		if updatingForbiddenFields {
-			return apierrors.NewUnprocessableEntityError(apierrors.ErrorCodeUserSSOManaged, "Updating email, phone, password of a SSO account only possible via SSO")
+			return apierrors.NewUnprocessableEntityError(apierrors.ErrorCodeUserSSOManaged, "Updating email or password of a SSO account only possible via SSO")
 		}
 	}
 
