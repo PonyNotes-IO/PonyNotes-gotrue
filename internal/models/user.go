@@ -1002,6 +1002,7 @@ func obfuscateIdentityProviderId(identity *Identity) string {
 }
 
 // FindUserByPhoneChangeAndAudience finds a user with the matching phone change and audience.
+// Note: We removed the is_sso_user = false restriction to support SSO users binding phone numbers.
 func FindUserByPhoneChangeAndAudience(tx *storage.Connection, phone, aud string) (*User, error) {
-	return findUser(tx, "instance_id = ? and phone_change = ? and aud = ? and is_sso_user = false", uuid.Nil, phone, aud)
+	return findUser(tx, "instance_id = ? and phone_change = ? and aud = ?", uuid.Nil, phone, aud)
 }
