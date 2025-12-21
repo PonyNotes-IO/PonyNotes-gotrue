@@ -172,6 +172,10 @@ func (a *API) internalExternalProviderCallback(w http.ResponseWriter, r *http.Re
 	providerType := getExternalProviderType(ctx)
 	data, err := a.handleOAuthCallback(r)
 	if err != nil {
+		// record oauth callback error (no user identified yet)
+		go func() {
+			_ = a.recordSignInEvent(ctx, r, uuid.Nil, metering.LoginTypeOAuth, &metering.LoginData{Provider: providerType, Extra: map[string]interface{}{"error": err.Error()}}, false, "oauth_callback_error")
+		}()
 		return err
 	}
 
@@ -259,6 +263,10 @@ func (a *API) internalExternalProviderCallback(w http.ResponseWriter, r *http.Re
 		metering.RecordLogin(metering.LoginTypeOAuth, user.ID, &metering.LoginData{
 			Provider: providerType,
 		})
+		// persist structured sign-in log asynchronously
+		go func() {
+			_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypeOAuth, &metering.LoginData{Provider: providerType}, true, "")
+		}()
 	}
 
 	rurl := a.getExternalRedirectURL(r)

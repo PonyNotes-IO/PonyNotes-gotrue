@@ -12,6 +12,7 @@ import (
 	"github.com/fatih/structs"
 	"github.com/sethvargo/go-password/password"
 	"github.com/sirupsen/logrus"
+	"github.com/gofrs/uuid"
 	"github.com/supabase/auth/internal/api/apierrors"
 	"github.com/supabase/auth/internal/api/provider"
 	"github.com/supabase/auth/internal/api/sms_provider"
@@ -222,6 +223,10 @@ func (a *API) verifyGet(w http.ResponseWriter, r *http.Request, params *VerifyPa
 		rurl = token.AsRedirectURL(rurl, q)
 
 		metering.RecordLogin(metering.LoginTypeImplicit, token.User.ID, nil)
+		// persist structured sign-in log asynchronously
+		go func() {
+			_ = a.recordSignInEvent(ctx, r, token.User.ID, metering.LoginTypeImplicit, nil, true, "")
+		}()
 
 	} else if isPKCEFlow(flowType) {
 		rurl, err = a.prepPKCERedirectURL(rurl, authCode)
@@ -299,7 +304,7 @@ func (a *API) verifyPost(w http.ResponseWriter, r *http.Request, params *VerifyP
 		if isUsingTokenHash(params) {
 			user, terr = a.verifyTokenHash(tx, params)
 		} else {
-			user, terr = a.verifyUserAndToken(tx, params, aud)
+			user, terr = a.verifyUserAndToken(tx, params, aud, r)
 		}
 		if terr != nil {
 			return terr
@@ -359,6 +364,10 @@ func (a *API) verifyPost(w http.ResponseWriter, r *http.Request, params *VerifyP
 	metering.RecordLogin(metering.LoginTypeOTP, user.ID, &metering.LoginData{
 		Provider: provider,
 	})
+	// persist structured sign-in log asynchronously
+	go func() {
+		_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypeOTP, &metering.LoginData{Provider: provider}, true, "")
+	}()
 
 	return sendJSON(w, http.StatusOK, token)
 }
@@ -725,7 +734,7 @@ func (a *API) verifyTokenHash(conn *storage.Connection, params *VerifyParams) (*
 }
 
 // verifyUserAndToken verifies the token associated to the user based on the verify type
-func (a *API) verifyUserAndToken(conn *storage.Connection, params *VerifyParams, aud string) (*models.User, error) {
+func (a *API) verifyUserAndToken(conn *storage.Connection, params *VerifyParams, aud string, r *http.Request) (*models.User, error) {
 	config := a.config
 
 	var user *models.User
@@ -747,6 +756,8 @@ func (a *API) verifyUserAndToken(conn *storage.Connection, params *VerifyParams,
 
 	if err != nil {
 		if models.IsNotFoundError(err) {
+			// record failed lookup (no user found for the token)
+			_ = a.recordSignInEvent(r.Context(), r, uuid.Nil, metering.LoginTypeOTP, nil, false, "token_user_not_found")
 			return nil, apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Token has expired or is invalid").WithInternalError(err)
 		}
 		return nil, apierrors.NewInternalServerError("Database error finding user").WithInternalError(err)
@@ -808,6 +819,8 @@ func (a *API) verifyUserAndToken(conn *storage.Connection, params *VerifyParams,
 	}
 
 	if !isValid {
+		// record failed OTP validation
+		_ = a.recordSignInEvent(r.Context(), r, user.ID, metering.LoginTypeOTP, nil, false, "otp_invalid")
 		return nil, apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Token has expired or is invalid").WithInternalMessage("token has expired or is invalid")
 	}
 	return user, nil

@@ -653,7 +653,10 @@ func (a *API) verifyTOTPFactor(w http.ResponseWriter, r *http.Request, params *V
 			if output.Message == "" {
 				output.Message = v0hooks.DefaultMFAHookRejectionMessage
 			}
-
+			// record hook rejection as failed MFA sign-in
+			go func() {
+				_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypeMFA, &metering.LoginData{Provider: factor.FactorType, Extra: map[string]interface{}{"hook_message": output.Message}}, false, "hook_rejection")
+			}()
 			return apierrors.NewForbiddenError(apierrors.ErrorCodeMFAVerificationRejected, output.Message)
 		}
 	}
@@ -726,6 +729,10 @@ func (a *API) verifyTOTPFactor(w http.ResponseWriter, r *http.Request, params *V
 	metering.RecordLogin(metering.LoginTypeMFA, user.ID, &metering.LoginData{
 		Provider: metering.ProviderMFATOTP,
 	})
+	// persist structured sign-in log asynchronously
+	go func() {
+		_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypeMFA, &metering.LoginData{Provider: metering.ProviderMFATOTP}, true, "")
+	}()
 
 	return sendJSON(w, http.StatusOK, token)
 
@@ -795,7 +802,10 @@ func (a *API) verifyPhoneFactor(w http.ResponseWriter, r *http.Request, params *
 			if output.Message == "" {
 				output.Message = v0hooks.DefaultMFAHookRejectionMessage
 			}
-
+			// record hook rejection as failed MFA sign-in
+			go func() {
+				_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypeMFA, &metering.LoginData{Provider: metering.ProviderMFAPhone, Extra: map[string]interface{}{"hook_message": output.Message}}, false, "hook_rejection")
+			}()
 			return apierrors.NewForbiddenError(apierrors.ErrorCodeMFAVerificationRejected, output.Message)
 		}
 	}
@@ -857,6 +867,10 @@ func (a *API) verifyPhoneFactor(w http.ResponseWriter, r *http.Request, params *
 	metering.RecordLogin(metering.LoginTypeMFA, user.ID, &metering.LoginData{
 		Provider: metering.ProviderMFAPhone,
 	})
+	// persist structured sign-in log asynchronously
+	go func() {
+		_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypeMFA, &metering.LoginData{Provider: metering.ProviderMFAPhone}, true, "")
+	}()
 
 	return sendJSON(w, http.StatusOK, token)
 }
@@ -960,6 +974,10 @@ func (a *API) verifyWebAuthnFactor(w http.ResponseWriter, r *http.Request, param
 	metering.RecordLogin(metering.LoginTypeMFA, user.ID, &metering.LoginData{
 		Provider: metering.ProviderMFAWebAuthn,
 	})
+	// persist structured sign-in log asynchronously
+	go func() {
+		_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypeMFA, &metering.LoginData{Provider: metering.ProviderMFAWebAuthn}, true, "")
+	}()
 
 	return sendJSON(w, http.StatusOK, token)
 }

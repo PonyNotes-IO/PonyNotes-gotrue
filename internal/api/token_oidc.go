@@ -286,6 +286,10 @@ func (a *API) IdTokenGrant(ctx context.Context, w http.ResponseWriter, r *http.R
 	metering.RecordLogin(metering.LoginTypeOIDC, token.User.ID, &metering.LoginData{
 		Provider: providerType,
 	})
+	// persist structured sign-in log asynchronously
+	go func() {
+		_ = a.recordSignInEvent(ctx, r, token.User.ID, metering.LoginTypeOIDC, &metering.LoginData{Provider: providerType}, true, "")
+	}()
 
 	return sendJSON(w, http.StatusOK, token)
 }

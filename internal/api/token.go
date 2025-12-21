@@ -161,6 +161,10 @@ func (a *API) ResourceOwnerPasswordGrant(ctx context.Context, w http.ResponseWri
 
 	if err != nil {
 		if models.IsNotFoundError(err) {
+			// record failed password login (user not found)
+			go func() {
+				_ = a.recordSignInEvent(ctx, r, uuid.Nil, metering.LoginTypePassword, &metering.LoginData{Provider: provider}, false, "user_not_found")
+			}()
 			return apierrors.NewBadRequestError(apierrors.ErrorCodeInvalidCredentials, InvalidLoginMessage)
 		}
 		return apierrors.NewInternalServerError("Database error querying schema").WithInternalError(err)
@@ -175,6 +179,10 @@ func (a *API) ResourceOwnerPasswordGrant(ctx context.Context, w http.ResponseWri
 	}
 
 	if user.IsBanned() {
+		// record banned login attempt
+		go func() {
+			_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypePassword, &metering.LoginData{Provider: provider}, false, "user_banned")
+		}()
 		return apierrors.NewBadRequestError(apierrors.ErrorCodeUserBanned, "User is banned")
 	}
 
@@ -227,10 +235,18 @@ func (a *API) ResourceOwnerPasswordGrant(ctx context.Context, w http.ResponseWri
 					return err
 				}
 			}
+			// record hook rejection as failed sign-in
+			go func() {
+				_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypePassword, &metering.LoginData{Provider: provider, Extra: map[string]interface{}{"hook_message": output.Message}}, false, "hook_rejection")
+			}()
 			return apierrors.NewBadRequestError(apierrors.ErrorCodeInvalidCredentials, output.Message)
 		}
 	}
 	if !isValidPassword {
+		// record failed password attempt
+		go func() {
+			_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypePassword, &metering.LoginData{Provider: provider}, false, "invalid_password")
+		}()
 		return apierrors.NewBadRequestError(apierrors.ErrorCodeInvalidCredentials, InvalidLoginMessage)
 	}
 
@@ -264,6 +280,10 @@ func (a *API) ResourceOwnerPasswordGrant(ctx context.Context, w http.ResponseWri
 	metering.RecordLogin(metering.LoginTypePassword, user.ID, &metering.LoginData{
 		Provider: provider,
 	})
+	// persist structured sign-in log asynchronously
+	go func() {
+		_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypePassword, &metering.LoginData{Provider: provider}, true, "")
+	}()
 	return sendJSON(w, http.StatusOK, token)
 }
 
@@ -287,6 +307,10 @@ func (a *API) ThirdPartyGrant(ctx context.Context, w http.ResponseWriter, r *htt
 
 	provider, err := a.ThirdPartyProviderProvider(params.Code, params.Platform)
 	if err != nil {
+		// record third-party provider creation error
+		go func() {
+			_ = a.recordSignInEvent(ctx, r, uuid.Nil, metering.LoginTypeOAuth, &metering.LoginData{Provider: params.Platform, Extra: map[string]interface{}{"error": err.Error()}}, false, "third_party_provider_error")
+		}()
 		return err
 	}
 
@@ -383,6 +407,10 @@ func (a *API) ThirdPartyGrant(ctx context.Context, w http.ResponseWriter, r *htt
 	metering.RecordLogin(metering.LoginTypePassword, user.ID, &metering.LoginData{
 		Provider: params.Platform,
 	})
+	// persist structured sign-in log asynchronously
+	go func() {
+		_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypePassword, &metering.LoginData{Provider: params.Platform}, true, "")
+	}()
 	return sendJSON(w, http.StatusOK, token)
 }
 
@@ -460,6 +488,10 @@ func (a *API) PKCE(ctx context.Context, w http.ResponseWriter, r *http.Request) 
 	metering.RecordLogin(metering.LoginTypePKCE, user.ID, &metering.LoginData{
 		Provider: flowState.ProviderType,
 	})
+	// persist structured sign-in log asynchronously
+	go func() {
+		_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypePKCE, &metering.LoginData{Provider: flowState.ProviderType}, true, "")
+	}()
 	return sendJSON(w, http.StatusOK, token)
 }
 

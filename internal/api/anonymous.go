@@ -55,5 +55,9 @@ func (a *API) SignupAnonymously(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	metering.RecordLogin(metering.LoginTypeAnonymous, newUser.ID, nil)
+	// persist structured sign-in log asynchronously
+	go func() {
+		_ = a.recordSignInEvent(ctx, r, newUser.ID, metering.LoginTypeAnonymous, nil, true, "")
+	}()
 	return sendJSON(w, http.StatusOK, token)
 }

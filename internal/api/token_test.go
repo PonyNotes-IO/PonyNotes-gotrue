@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"github.com/gofrs/uuid"
 	"github.com/supabase/auth/internal/api/apierrors"
 	"github.com/supabase/auth/internal/conf"
 	"github.com/supabase/auth/internal/models"
@@ -396,6 +397,93 @@ func (ts *TokenTestSuite) TestTokenRefreshTokenGrantFailure() {
 	assert.Equal(ts.T(), http.StatusBadRequest, w.Code)
 }
 
+func (ts *TokenTestSuite) TestTokenPasswordGrantFailureRecordsSignInLog() {
+	// Use existing test user (ts.User) but supply wrong password
+	var buffer bytes.Buffer
+	require.NoError(ts.T(), json.NewEncoder(&buffer).Encode(map[string]interface{}{
+		"email":    ts.User.GetEmail(),
+		"password": "wrong-password",
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/token?grant_type=password", &buffer)
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	ts.API.handler.ServeHTTP(w, req)
+	assert.Equal(ts.T(), http.StatusBadRequest, w.Code)
+
+	// verify sign_in_logs contains a failed entry for this user
+	logs, err := models.FindSignInLogsByUser(ts.API.db, ts.User.ID, nil)
+	require.NoError(ts.T(), err)
+	require.GreaterOrEqual(ts.T(), len(logs), 1)
+	found := false
+	for _, l := range logs {
+		if l.ErrorReason != nil && *l.ErrorReason == "invalid_password" && l.Success == false {
+			found = true
+			break
+		}
+	}
+	require.True(ts.T(), found, "expected a failed sign_in_logs entry with reason 'invalid_password'")
+}
+
+func (ts *TokenTestSuite) TestTokenPasswordGrantUserNotFoundRecordsSignInLog() {
+	// Attempt login with non-existent user
+	var buffer bytes.Buffer
+	require.NoError(ts.T(), json.NewEncoder(&buffer).Encode(map[string]interface{}{
+		"email":    "no-such-user@example.com",
+		"password": "whatever",
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/token?grant_type=password", &buffer)
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	ts.API.handler.ServeHTTP(w, req)
+	assert.Equal(ts.T(), http.StatusBadRequest, w.Code)
+
+	// user_uuid for not-found entries is nil UUID
+	logs, err := models.FindSignInLogsByUser(ts.API.db, uuid.Nil, nil)
+	require.NoError(ts.T(), err)
+	require.GreaterOrEqual(ts.T(), len(logs), 1)
+	found := false
+	for _, l := range logs {
+		if l.ErrorReason != nil && *l.ErrorReason == "user_not_found" && l.Success == false {
+			found = true
+			break
+		}
+	}
+	require.True(ts.T(), found, "expected a failed sign_in_logs entry with reason 'user_not_found'")
+}
+
+func (ts *TokenTestSuite) TestThirdPartyProviderMissingRecordsSignInLog() {
+	// Call third_party grant with unknown platform to trigger provider creation error
+	var buffer bytes.Buffer
+	require.NoError(ts.T(), json.NewEncoder(&buffer).Encode(map[string]interface{}{
+		"platform": "unknown_provider",
+		"code":     "dummy",
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/token?grant_type=third_party", &buffer)
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	ts.API.handler.ServeHTTP(w, req)
+	// Expect an error response
+	assert.NotEqual(ts.T(), http.StatusOK, w.Code)
+
+	// check sign_in_logs for an entry with reason third_party_provider_error (nil user)
+	logs, err := models.FindSignInLogsByUser(ts.API.db, uuid.Nil, nil)
+	require.NoError(ts.T(), err)
+	found := false
+	for _, l := range logs {
+		if l.ErrorReason != nil && *l.ErrorReason == "third_party_provider_error" && l.Success == false {
+			found = true
+			break
+		}
+	}
+	require.True(ts.T(), found, "expected a failed sign_in_logs entry with reason 'third_party_provider_error'")
+}
+
 func (ts *TokenTestSuite) TestRefreshTokenReuseRevocation() {
 	originalSecurity := ts.API.config.Security
 
@@ -674,6 +762,19 @@ func (ts *TokenTestSuite) TestPasswordVerificationHook() {
 			ts.API.handler.ServeHTTP(w, req)
 
 			assert.Equal(ts.T(), c.expectedCode, w.Code)
+			// If hook rejected, expect a sign_in_logs entry with reason 'hook_rejection'
+			if c.expectedCode == http.StatusBadRequest {
+				logs, err := models.FindSignInLogsByUser(ts.API.db, ts.User.ID, nil)
+				require.NoError(ts.T(), err)
+				found := false
+				for _, l := range logs {
+					if l.ErrorReason != nil && *l.ErrorReason == "hook_rejection" && l.Success == false {
+						found = true
+						break
+					}
+				}
+				require.True(ts.T(), found, "expected a failed sign_in_logs entry with reason 'hook_rejection'")
+			}
 			cleanupHookSQL := fmt.Sprintf("drop function if exists %s", ts.Config.Hook.PasswordVerificationAttempt.HookName)
 			require.NoError(ts.T(), ts.API.db.RawQuery(cleanupHookSQL).Exec())
 			// Reset so it doesn't affect other tests
