@@ -37,8 +37,6 @@ require (
 	github.com/alibabacloud-go/debug v1.0.0 // indirect
 	github.com/alibabacloud-go/tea v1.2.2 // indirect
 	github.com/bits-and-blooms/bitset v1.20.0 // indirect
-	github.com/bytedance/douyin-openapi-credential-go v0.0.0-20240627133153-7f4587ca06ce // indirect
-	github.com/bytedance/douyin-openapi-sdk-go v1.0.3 // indirect
 	github.com/bytedance/douyin-openapi-util-go v0.0.0-20240627134255-db766d8741c8 // indirect
 	github.com/consensys/gnark-crypto v0.18.0 // indirect
 	github.com/crate-crypto/go-eth-kzg v1.3.0 // indirect
@@ -104,6 +102,8 @@ require (
 require (
 	github.com/bits-and-blooms/bloom/v3 v3.6.0
 	github.com/btcsuite/btcutil v1.0.2
+	github.com/bytedance/douyin-openapi-credential-go v0.0.0-20240627133153-7f4587ca06ce
+	github.com/bytedance/douyin-openapi-sdk-go v1.0.3
 	github.com/crewjam/saml v0.4.14
 	github.com/fatih/structs v1.1.0
 	github.com/fsnotify/fsnotify v1.7.0
@@ -192,6 +192,8 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-go 1.19
+go 1.23.0
+
+toolchain go1.24.6
 
 replace golang.org/x/crypto => golang.org/x/crypto v0.17.0

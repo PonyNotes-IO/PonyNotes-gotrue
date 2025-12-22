@@ -329,6 +329,15 @@ func (a *API) Signup(w http.ResponseWriter, r *http.Request) error {
 				"immediate_login_after_signup": true,
 			},
 		})
+	// persist structured sign-in log asynchronously
+	go func() {
+		_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypePassword, &metering.LoginData{
+			Provider: params.Provider,
+			Extra: map[string]interface{}{
+				"immediate_login_after_signup": true,
+			},
+		}, true, "")
+	}()
 		return sendJSON(w, http.StatusOK, token)
 	}
 	if user.HasBeenInvited() {

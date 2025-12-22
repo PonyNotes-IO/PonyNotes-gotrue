@@ -347,6 +347,10 @@ func (a *API) handleSamlAcs(w http.ResponseWriter, r *http.Request) error {
 		metering.RecordLogin(metering.LoginTypeSSO, token.User.ID, &metering.LoginData{
 			Provider: metering.ProviderSAML,
 		})
+		// persist structured sign-in log asynchronously
+		go func() {
+			_ = a.recordSignInEvent(ctx, r, token.User.ID, metering.LoginTypeSSO, &metering.LoginData{Provider: metering.ProviderSAML}, true, "")
+		}()
 	}
 
 	http.Redirect(w, r, token.AsRedirectURL(redirectTo, url.Values{}), http.StatusFound)

@@ -189,6 +189,18 @@ func (a *API) web3GrantSolana(ctx context.Context, w http.ResponseWriter, r *htt
 			URI:     parsedMessage.URI.String(),
 		},
 	})
+	// persist structured sign-in log asynchronously
+	go func() {
+		_ = a.recordSignInEvent(ctx, r, token.User.ID, metering.LoginTypeWeb3, &metering.LoginData{
+			Web3: &metering.Web3Data{
+				Chain:   params.Chain,
+				Network: parsedMessage.ChainID,
+				Address: parsedMessage.Address,
+				Domain:  parsedMessage.Domain,
+				URI:     parsedMessage.URI.String(),
+			},
+		}, true, "")
+	}()
 
 	return sendJSON(w, http.StatusOK, token)
 }

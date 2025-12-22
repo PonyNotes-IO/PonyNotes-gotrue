@@ -277,6 +277,10 @@ func (a *API) RefreshTokenGrant(ctx context.Context, w http.ResponseWriter, r *h
 			}
 		}
 		metering.RecordLogin(metering.LoginTypeToken, user.ID, nil)
+		// persist structured sign-in log asynchronously
+		go func() {
+			_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypeToken, nil, true, "")
+		}()
 		return sendJSON(w, http.StatusOK, newTokenResponse)
 	}
 

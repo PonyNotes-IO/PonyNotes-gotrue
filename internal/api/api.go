@@ -283,6 +283,7 @@ func NewAPIWithVersion(globalConfig *conf.GlobalConfiguration, db *storage.Conne
 					})
 
 					r.Get("/", api.adminUserGet)
+					r.Get("/sign_in_logs", api.adminUserSignInLogs)
 					r.Put("/", api.adminUserUpdate)
 					r.Delete("/", api.adminUserDelete)
 				})
