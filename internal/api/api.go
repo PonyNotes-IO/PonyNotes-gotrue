@@ -224,6 +224,7 @@ func NewAPIWithVersion(globalConfig *conf.GlobalConfiguration, db *storage.Conne
 			r.Get("/", api.UserGet)
 			r.With(api.limitHandler(api.limiterOpts.User)).Put("/", api.UserUpdate)
 			r.Get("/auth-info", api.UserAuthInfo)
+			r.Post("/sign_in_log", api.ClientSignInLog)
 
 			r.Route("/identities", func(r *router) {
 				r.Use(api.requireManualLinkingEnabled)
