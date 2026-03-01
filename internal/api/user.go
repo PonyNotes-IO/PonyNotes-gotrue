@@ -415,12 +415,14 @@ func (a *API) UserUpdate(w http.ResponseWriter, r *http.Request) error {
 			} else {
 				// 给新手机号发送验证码（换绑场景）
 				logEntry.Info("[PHONE_UPDATE] Phone change detected - sending code to NEW phone")
+				// 规范化手机号格式
+				formattedPhone := formatPhoneNumber(params.Phone)
 				if config.Sms.Autoconfirm {
 					logEntry.Info("[PHONE_UPDATE] Using autoconfirm mode")
-					user.PhoneChange = params.Phone
+					user.PhoneChange = formattedPhone
 					if _, terr := a.smsVerify(r, tx, user, &VerifyParams{
 						Type:  phoneChangeVerification,
-						Phone: params.Phone,
+						Phone: formattedPhone,
 					}); terr != nil {
 						logEntry.WithError(terr).Error("[PHONE_UPDATE] smsVerify failed")
 						return terr

@@ -41,7 +41,18 @@ func validateE164Format(phone string) bool {
 
 // formatPhoneNumber removes "+" and whitespaces in a phone number
 func formatPhoneNumber(phone string) string {
-	return strings.ReplaceAll(strings.TrimPrefix(phone, "+"), " ", "")
+	// 先去掉 + 前缀和空格
+	phone = strings.ReplaceAll(strings.TrimPrefix(phone, "+"), " ", "")
+	// 如果手机号以 86 开头且后面是 11 位数字，去掉 86 前缀（中国大陆手机号）
+	// 中国大陆手机号格式：1开头，共11位
+	if len(phone) >= 12 && strings.HasPrefix(phone, "86") {
+		// 检查是否是有效的中国手机号（以1开头的11位数字）
+		rest := phone[2:]
+		if len(rest) == 11 && strings.HasPrefix(rest, "1") {
+			return rest
+		}
+	}
+	return phone
 }
 
 // sendPhoneConfirmation sends an otp to the user's phone number
@@ -64,7 +75,8 @@ func (a *API) sendPhoneConfirmation(r *http.Request, tx *storage.Connection, use
 	case phoneChangeVerification:
 		token = &user.PhoneChangeToken
 		sentAt = user.PhoneChangeSentAt
-		user.PhoneChange = phone
+		// 规范化手机号格式，确保存储和查询时的格式一致
+		user.PhoneChange = formatPhoneNumber(phone)
 		includeFields = append(includeFields, "phone_change", "phone_change_token", "phone_change_sent_at")
 		logEntry.Info("[SEND_PHONE_CONFIRMATION] Type: phoneChangeVerification")
 	case phoneConfirmationOtp:

@@ -464,6 +464,13 @@ func (a *API) recoverVerify(r *http.Request, conn *storage.Connection, user *mod
 func (a *API) smsVerify(r *http.Request, conn *storage.Connection, user *models.User, params *VerifyParams) (*models.User, error) {
 	config := a.config
 
+	logrus.WithFields(logrus.Fields{
+		"user_id":      user.ID,
+		"phone":        params.Phone,
+		"verify_type":  params.Type,
+		"is_sso_user":  user.IsSSOUser,
+	})
+
 	err := conn.Transaction(func(tx *storage.Connection) error {
 
 		if params.Type == smsVerification {
@@ -488,6 +495,13 @@ func (a *API) smsVerify(r *http.Request, conn *storage.Connection, user *models.
 			if terr := models.NewAuditLogEntry(config.AuditLog, r, tx, user, models.UserModifiedAction, "", nil); terr != nil {
 				return terr
 			}
+
+			// 规范化手机号格式，确保与登录时查询的格式一致（去掉 + 前缀和空格）
+			formattedPhone := formatPhoneNumber(params.Phone)
+
+			// 更新 params.Phone 为格式化后的手机号
+			params.Phone = formattedPhone
+
 			if identity, terr := models.FindIdentityByIdAndProvider(tx, user.ID.String(), "phone"); terr != nil {
 				if !models.IsNotFoundError(terr) {
 					return terr
@@ -510,6 +524,24 @@ func (a *API) smsVerify(r *http.Request, conn *storage.Connection, user *models.
 			}
 			if terr := user.ConfirmPhoneChange(tx); terr != nil {
 				return apierrors.NewInternalServerError("Error confirming user").WithInternalError(terr)
+			}
+
+			// If the user was an SSO user (e.g., WeChat login), clear the SSO flag after binding a phone number
+			// This allows the user to log in with the bound phone number later
+			// Note: We only clear this flag when the user actually binds a real phone number
+			logrus.WithFields(logrus.Fields{
+				"user_id":     user.ID,
+				"phone":       params.Phone,
+				"is_sso_user": user.IsSSOUser,
+			}).Info("Phone change verification - checking SSO flag")
+			if user.IsSSOUser {
+				user.IsSSOUser = false
+				if terr := tx.UpdateOnly(user, "is_sso_user"); terr != nil {
+					return apierrors.NewInternalServerError("Error clearing SSO user flag").WithInternalError(terr)
+				}
+				logrus.WithFields(logrus.Fields{
+					"user_id": user.ID,
+				}).Info("Cleared SSO user flag after phone binding")
 			}
 		}
 
