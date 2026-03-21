@@ -253,6 +253,12 @@ type AuditLogConfiguration struct {
 	DisablePostgres bool `split_words:"true" default:"false"`
 }
 
+// CloudConfiguration 是调用 Cloud 服务的配置
+type CloudConfiguration struct {
+	URL      string `json:"url" split_words:"true" default:""`
+	Timeout  int    `json:"timeout" split_words:"true" default:"30"`
+}
+
 // GlobalConfiguration holds all the configuration that applies to all instances.
 type GlobalConfiguration struct {
 	API           APIConfiguration
@@ -266,7 +272,7 @@ type GlobalConfiguration struct {
 	Metrics       MetricsConfig
 	SMTP          SMTPConfiguration
 	AuditLog      AuditLogConfiguration `split_words:"true"`
-
+	Cloud         CloudConfiguration   `json:"cloud"`
 	RateLimitHeader                     string  `split_words:"true"`
 	RateLimitEmailSent                  Rate    `split_words:"true" default:"30"`
 	RateLimitSmsSent                    Rate    `split_words:"true" default:"30"`

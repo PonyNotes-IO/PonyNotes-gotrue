@@ -39,6 +39,7 @@ type API struct {
 	hooksMgr    *v0hooks.Manager
 	hibpClient  *hibp.PwnedClient
 	oauthServer *oauthserver.Server
+	cloudClient *http.Client
 
 	// overrideTime can be used to override the clock used by handlers. Should only be used in tests!
 	overrideTime func() time.Time
@@ -118,6 +119,16 @@ func NewAPIWithVersion(globalConfig *conf.GlobalConfiguration, db *storage.Conne
 
 			logrus.Infof("Pwned passwords cache is %.2f KB", float64(cache.Cap())/(8*1024.0))
 		}
+	}
+
+	// 初始化 Cloud 服务 HTTP 客户端（用于账号合并时调用 cloud API）
+	if api.config.Cloud.URL != "" {
+		timeout := time.Duration(api.config.Cloud.Timeout) * time.Second
+		if timeout == 0 {
+			timeout = 30 * time.Second
+		}
+		api.cloudClient = &http.Client{Timeout: timeout}
+		logrus.Infof("Cloud client initialized: URL=%s, Timeout=%v", api.config.Cloud.URL, timeout)
 	}
 
 	api.deprecationNotices()
@@ -225,6 +236,10 @@ func NewAPIWithVersion(globalConfig *conf.GlobalConfiguration, db *storage.Conne
 			r.With(api.limitHandler(api.limiterOpts.User)).Put("/", api.UserUpdate)
 			r.Get("/auth-info", api.UserAuthInfo)
 			r.Post("/sign_in_log", api.ClientSignInLog)
+
+			// 手机号绑定（含账号合并）
+			r.Post("/send-phone-bind-code", api.SendPhoneBindCode)
+			r.Post("/confirm-phone-bind", api.ConfirmPhoneBind)
 
 			r.Route("/identities", func(r *router) {
 				r.Use(api.requireManualLinkingEnabled)
