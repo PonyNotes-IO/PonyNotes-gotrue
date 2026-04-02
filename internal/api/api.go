@@ -241,6 +241,9 @@ func NewAPIWithVersion(globalConfig *conf.GlobalConfiguration, db *storage.Conne
 			r.Post("/send-phone-bind-code", api.SendPhoneBindCode)
 			r.Post("/confirm-phone-bind", api.ConfirmPhoneBind)
 
+			// 邮箱检测（用于绑定/换绑前预检查）
+			r.Post("/check-email-registered", api.CheckEmailRegistered)
+
 			r.Route("/identities", func(r *router) {
 				r.Use(api.requireManualLinkingEnabled)
 				r.Get("/authorize", api.LinkIdentity)

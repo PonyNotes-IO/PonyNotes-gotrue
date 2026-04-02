@@ -448,3 +448,80 @@ func (a *API) mergeAuthUsers(db *storage.Connection, primaryUser, secondaryUser 
 	logEntry.Info("[mergeAuthUsers] Auth layer merge completed successfully")
 	return nil
 }
+
+// CheckEmailRegisteredResponse 是检测邮箱是否已注册的响应
+type CheckEmailRegisteredResponse struct {
+	EmailExists bool   `json:"email_exists"` // 邮箱已被其他账号注册
+	IsOwnEmail  bool   `json:"is_own_email"` // 邮箱是当前用户的
+	ExistingUID string `json:"existing_uid,omitempty"` // 已存在账号的 UID
+	Message     string `json:"message,omitempty"`
+}
+
+// CheckEmailRegistered 检测邮箱是否已被其他账号注册
+// 用于邮箱绑定/换绑场景，前端在发送验证码前先检测
+func (a *API) CheckEmailRegistered(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	db := a.db.WithContext(ctx)
+	aud := a.requestAud(ctx, r)
+
+	// 获取当前用户（必须已登录）
+	user := getUser(ctx)
+	if user == nil {
+		return apierrors.NewForbiddenError(apierrors.ErrorCodeNotAdmin, "User not authenticated")
+	}
+
+	params := &struct {
+		Email string `json:"email"`
+	}{}
+	if err := json.NewDecoder(r.Body).Decode(params); err != nil {
+		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Invalid request body: "+err.Error())
+	}
+
+	email, err := a.validateEmail(params.Email)
+	if err != nil {
+		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, err.Error())
+	}
+
+	logEntry := observability.GetLogEntry(r).Entry
+	logEntry.WithFields(logrus.Fields{
+		"user_id": user.ID,
+		"email":   email,
+		"aud":     aud,
+	}).Info("[CheckEmailRegistered] Checking email registration status")
+
+	// 检查邮箱是否属于当前用户
+	if user.GetEmail() == email {
+		return sendJSON(w, http.StatusOK, &CheckEmailRegisteredResponse{
+			EmailExists: false,
+			IsOwnEmail:  true,
+			Message:     "This email is already bound to your account",
+		})
+	}
+
+	// 检查邮箱是否已被其他用户注册
+	existingUser, err := models.FindUserByEmailAndAudience(db, email, aud)
+	if err != nil {
+		if !models.IsNotFoundError(err) {
+			logEntry.WithError(err).Error("[CheckEmailRegistered] Database error checking email")
+			return apierrors.NewInternalServerError("Database error checking email").WithInternalError(err)
+		}
+		// 没找到 → 邮箱未被占用
+		logEntry.Info("[CheckEmailRegistered] Email not registered")
+		return sendJSON(w, http.StatusOK, &CheckEmailRegisteredResponse{
+			EmailExists: false,
+			IsOwnEmail:  false,
+		})
+	}
+
+	// 邮箱已被其他账号注册
+	logEntry.WithFields(logrus.Fields{
+		"existing_user_id": existingUser.ID,
+	}).Info("[CheckEmailRegistered] Email already registered by another user")
+
+	return sendJSON(w, http.StatusOK, &CheckEmailRegisteredResponse{
+		EmailExists: true,
+		IsOwnEmail:  false,
+		ExistingUID: existingUser.ID.String(),
+		Message:     "该邮箱已被其他账号注册",
+	})
+}
