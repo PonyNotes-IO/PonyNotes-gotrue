@@ -3,7 +3,7 @@ create table if not exists {{ index .Options "Namespace" }}.oauth_pending_users(
     id uuid primary key,
     platform text not null,
     provider_id text not null,
-    user_meta map not null,
+    user_meta jsonb not null,
     pending_token text not null,
     expires_at timestamptz not null,
     created_at timestamptz null default now()
