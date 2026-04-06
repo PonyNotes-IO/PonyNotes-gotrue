@@ -304,7 +304,11 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 
 		logEntry.WithField("new_user_id", newUser.ID).Info("[ConfirmPhoneBind] New user created with OAuth identity")
 
-		var grantParams models.GrantParams
+		grantParams := models.GrantParams{
+			FactorID:         nil,
+			SessionNotAfter:  nil,
+			SessionTag:       nil,
+		}
 		grantParams.FillGrantParams(r)
 		token, terr := a.issueRefreshToken(r, db, newUser, models.PasswordGrant, grantParams)
 		if terr != nil {
@@ -396,7 +400,11 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 
 	logEntry.WithField("existing_user_id", existingUser.ID).Info("[ConfirmPhoneBind] OAuth identity bound to existing account successfully")
 
-	var grantParams models.GrantParams
+	grantParams := models.GrantParams{
+		FactorID:      nil,
+		SessionNotAfter: nil,
+		SessionTag:    nil,
+	}
 	grantParams.FillGrantParams(r)
 	token, terr := a.issueRefreshToken(r, db, existingUser, models.PasswordGrant, grantParams)
 	if terr != nil {
