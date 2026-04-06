@@ -325,11 +325,10 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 
 	// 找到了已注册账号
 	if !params.Merge {
-		return sendJSON(w, http.StatusOK, &ConfirmPhoneBindResponse{
-			BindToExisting: false,
-			UserID:         "",
-			Message:        "Binding to existing account was not confirmed by user",
-		})
+		logEntry.WithFields(logrus.Fields{
+			"existing_user_id": existingUser.ID,
+		}).Warn("[ConfirmPhoneBind] Existing phone found but merge=false - rejecting")
+		return apierrors.NewBadRequestError(apierrors.ErrorCodePhoneExists, "This phone number is already registered. Please confirm binding to merge accounts.")
 	}
 
 	// 执行绑定到已注册账号
@@ -458,7 +457,7 @@ func (a *API) confirmPhoneBindAuthenticated(ctx context.Context, db *storage.Con
 	logEntry.WithFields(logrus.Fields{
 		"existing_user_id": existingUser.ID,
 	}).Warn("[ConfirmPhoneBind] Attempted to bind phone registered by another user - rejected")
-	return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "This phone number is already registered by another account and cannot be bound")
+	return apierrors.NewBadRequestError(apierrors.ErrorCodePhoneExists, "This phone number is already registered by another account and cannot be bound")
 }
 
 // verifyPhoneOTPForBind 验证手机号 OTP 并标记已确认（用于绑定流程）
