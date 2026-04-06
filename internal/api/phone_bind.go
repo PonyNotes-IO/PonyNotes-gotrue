@@ -347,6 +347,7 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 		return apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Verification code expired or invalid")
 	}
 
+	var sessionToken *AccessTokenResponse
 	err = db.Transaction(func(tx *storage.Connection) error {
 		var terr error
 
@@ -392,6 +393,39 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 			return terr
 		}
 
+		// NOTE: 内联 token 颁发逻辑，避免嵌套事务
+		// 创建 session 和 refresh token
+		refreshToken, terr := models.GrantAuthenticatedUser(tx, existingUser, models.GrantParams{})
+		if terr != nil {
+			return apierrors.NewInternalServerError("Database error granting user").WithInternalError(terr)
+		}
+
+		// 添加 AMR claim
+		terr = models.AddClaimToSession(tx, *refreshToken.SessionId, models.PasswordGrant)
+		if terr != nil {
+			return terr
+		}
+
+		// 生成 access token
+		tokenString, expiresAt, terr := a.generateAccessToken(r, tx, existingUser, refreshToken.SessionId, models.PasswordGrant)
+		if terr != nil {
+			httpErr, ok := terr.(*HTTPError)
+			if ok {
+				return httpErr
+			}
+			return apierrors.NewInternalServerError("error generating jwt token").WithInternalError(terr)
+		}
+
+		// 保存到 sessionToken 供外部使用
+		sessionToken = &AccessTokenResponse{
+			Token:        tokenString,
+			TokenType:    "bearer",
+			ExpiresIn:    a.config.JWT.Exp,
+			ExpiresAt:    expiresAt,
+			RefreshToken: refreshToken.Token,
+			User:         existingUser,
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -400,26 +434,14 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 
 	logEntry.WithField("existing_user_id", existingUser.ID).Info("[ConfirmPhoneBind] OAuth identity bound to existing account successfully")
 
-	grantParams := models.GrantParams{
-		FactorID:      nil,
-		SessionNotAfter: nil,
-		SessionTag:    nil,
-	}
-	grantParams.FillGrantParams(r)
-	token, terr := a.issueRefreshToken(r, db, existingUser, models.PasswordGrant, grantParams)
-	if terr != nil {
-		logEntry.WithError(terr).Error("[ConfirmPhoneBind] Failed to issue token")
-		return apierrors.NewInternalServerError("Failed to issue token").WithInternalError(terr)
-	}
-
 	return sendJSON(w, http.StatusOK, &ConfirmPhoneBindResponse{
 		BindToExisting: true,
 		UserID:         existingUser.ID.String(),
 		Message:        "OAuth identity bound to existing account successfully.",
-		AccessToken:   token.Token,
-		RefreshToken:  token.RefreshToken,
-		ExpiresIn:     token.ExpiresIn,
-		TokenType:     token.TokenType,
+		AccessToken:    sessionToken.Token,
+		RefreshToken:   sessionToken.RefreshToken,
+		ExpiresIn:      sessionToken.ExpiresIn,
+		TokenType:      sessionToken.TokenType,
 	})
 }
 
