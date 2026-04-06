@@ -17,7 +17,7 @@ type OAuthPendingUser struct {
 	ID         uuid.UUID              `json:"id" db:"id"`
 	Platform   string                 `json:"platform" db:"platform"`
 	ProviderID string                 `json:"provider_id" db:"provider_id"`
-	UserMeta   map[string]interface{} `json:"user_meta" db:"user_meta"`
+	UserMeta   JSONMap `json:"user_meta" db:"user_meta"`
 	PendingToken string               `json:"pending_token" db:"pending_token"`
 	ExpiresAt  time.Time             `json:"expires_at" db:"expires_at"`
 	CreatedAt  time.Time             `json:"created_at" db:"created_at"`
