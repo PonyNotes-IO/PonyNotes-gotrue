@@ -352,18 +352,28 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 		}
 
 		existingIdentity, terr := models.FindIdentityByIdAndProvider(tx, identity.ProviderID, identity.Provider)
-		if terr == nil && existingIdentity != nil && existingIdentity.UserID == existingUser.ID {
+		if terr != nil {
+			if models.IsNotFoundError(terr) {
+				// identity 不存在，可以创建
+				if terr = tx.Create(identity); terr != nil {
+					return apierrors.NewInternalServerError("Error creating identity").WithInternalError(terr)
+				}
+				logEntry.WithFields(logrus.Fields{
+					"provider":    identity.Provider,
+					"provider_id": identity.ProviderID,
+				}).Info("[ConfirmPhoneBind] OAuth identity created for existing account")
+			} else {
+				// 数据库错误（非 NotFoundError）
+				return apierrors.NewInternalServerError("Database error checking existing identity").WithInternalError(terr)
+			}
+		} else if existingIdentity != nil && existingIdentity.UserID == existingUser.ID {
 			logEntry.WithFields(logrus.Fields{
 				"provider":    identity.Provider,
 				"provider_id": identity.ProviderID,
 			}).Info("[ConfirmPhoneBind] Existing account already has this identity, skipping")
 		} else {
-			if terr = tx.Create(identity); terr != nil {
-				return apierrors.NewInternalServerError("Error creating identity").WithInternalError(terr)
-			}
-			logEntry.WithFields(logrus.Fields{
-				"provider": identity.Provider,
-			}).Info("[ConfirmPhoneBind] OAuth identity added to existing account")
+			// identity 已存在但属于其他用户 → 创建会违反唯一约束，直接报错
+			return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "This OAuth identity is already linked to another account")
 		}
 
 		if terr = tx.Destroy(pendingUser); terr != nil {
