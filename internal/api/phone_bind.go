@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/sirupsen/logrus"
 	"github.com/supabase/auth/internal/api/apierrors"
 	"github.com/supabase/auth/internal/api/sms_provider"
+	"github.com/supabase/auth/internal/hooks/v0hooks"
 	"github.com/supabase/auth/internal/crypto"
 	"github.com/supabase/auth/internal/models"
 	"github.com/supabase/auth/internal/observability"
@@ -347,11 +349,21 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 		return apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Verification code expired or invalid")
 	}
 
+	// aud 变量在事务内部需要用到，提前获取
+	aud := a.requestAud(ctx, r)
+
 	var sessionToken *AccessTokenResponse
 	err = db.Transaction(func(tx *storage.Connection) error {
 		var terr error
 
-		identity, terr := models.NewIdentity(existingUser, pendingUser.Platform, pendingUser.UserMeta)
+		// 重要：在事务内部重新查询用户，避免使用带有 eager loading 状态的 existingUser
+		// 这样可以避免 pop ORM 在事务中可能出现的 nil 指针问题
+		txUser, terr := models.FindUserByID(tx, existingUser.ID)
+		if terr != nil {
+			return apierrors.NewInternalServerError("Database error finding user in transaction").WithInternalError(terr)
+		}
+
+		identity, terr := models.NewIdentity(txUser, pendingUser.Platform, pendingUser.UserMeta)
 		if terr != nil {
 			return apierrors.NewInternalServerError("Error creating identity").WithInternalError(terr)
 		}
@@ -371,7 +383,7 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 				// 数据库错误（非 NotFoundError）
 				return apierrors.NewInternalServerError("Database error checking existing identity").WithInternalError(terr)
 			}
-		} else if existingIdentity != nil && existingIdentity.UserID == existingUser.ID {
+		} else if existingIdentity != nil && existingIdentity.UserID == txUser.ID {
 			logEntry.WithFields(logrus.Fields{
 				"provider":    identity.Provider,
 				"provider_id": identity.ProviderID,
@@ -385,7 +397,7 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 			return apierrors.NewInternalServerError("Error deleting pending user").WithInternalError(terr)
 		}
 
-		if terr = models.NewAuditLogEntry(a.config.AuditLog, nil, tx, existingUser, models.UserModifiedAction, "", map[string]interface{}{
+		if terr = models.NewAuditLogEntry(a.config.AuditLog, nil, tx, txUser, models.UserModifiedAction, "", map[string]interface{}{
 			"action":              "bind_oauth_to_existing_phone",
 			"pending_user_id":    pendingUser.ID.String(),
 			"migrated_identities": 1,
@@ -394,8 +406,8 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 		}
 
 		// NOTE: 内联 token 颁发逻辑，避免嵌套事务
-		// 创建 session 和 refresh token
-		refreshToken, terr := models.GrantAuthenticatedUser(tx, existingUser, models.GrantParams{})
+		// 创建 session 和 refresh token，使用事务内部的用户对象
+		refreshToken, terr := models.GrantAuthenticatedUser(tx, txUser, models.GrantParams{})
 		if terr != nil {
 			return apierrors.NewInternalServerError("Database error granting user").WithInternalError(terr)
 		}
@@ -406,13 +418,54 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 			return terr
 		}
 
-		// 生成 access token
-		tokenString, expiresAt, terr := a.generateAccessToken(r, tx, existingUser, refreshToken.SessionId, models.PasswordGrant)
-		if terr != nil {
-			httpErr, ok := terr.(*HTTPError)
-			if ok {
-				return httpErr
+		// 直接生成 JWT token，避免通过 FindSessionByID 加载 session
+		// 这样可以避免 pop 的 eager loading 在事务内可能出现的 nil 问题
+		now := time.Now()
+		txUser.LastSignInAt = &now
+
+		issuedAt := now.UTC()
+		expiresAt := issuedAt.Add(time.Second * time.Duration(a.config.JWT.Exp))
+
+		// 使用默认的 AAL1 和空 AMR，因为新创建的 session 还没有 claim 数据
+		claims := &v0hooks.AccessTokenClaims{
+			RegisteredClaims: jwt.RegisteredClaims{
+				Subject:   txUser.ID.String(),
+				Audience:  jwt.ClaimStrings{aud},
+				IssuedAt:  jwt.NewNumericDate(issuedAt),
+				ExpiresAt: jwt.NewNumericDate(expiresAt),
+				Issuer:    a.config.JWT.Issuer,
+			},
+			Email:                         txUser.GetEmail(),
+			Phone:                         txUser.GetPhone(),
+			AppMetaData:                   txUser.AppMetaData,
+			UserMetaData:                  txUser.UserMetaData,
+			Role:                          txUser.Role,
+			AuthenticatorAssuranceLevel:   models.AAL1.String(),
+			AuthenticationMethodReference: []models.AMREntry{},
+			SessionId:                     refreshToken.SessionId.String(),
+			IsAnonymous:                   txUser.IsAnonymous,
+		}
+
+		var gotrueClaims jwt.Claims = claims
+		if a.config.Hook.CustomAccessToken.Enabled {
+			input := v0hooks.CustomAccessTokenInput{
+				UserID:               txUser.ID,
+				Claims:               claims,
+				AuthenticationMethod: models.PasswordGrant.String(),
 			}
+			output := v0hooks.CustomAccessTokenOutput{}
+			terr = a.hooksMgr.InvokeHook(tx, r, &input, &output)
+			if terr != nil {
+				return apierrors.NewInternalServerError("Custom access token hook failed").WithInternalError(terr)
+			}
+			if err := validateTokenClaims(output.Claims); err != nil {
+				return apierrors.NewInternalServerError("Invalid custom token claims").WithInternalError(err)
+			}
+			gotrueClaims = jwt.MapClaims(output.Claims)
+		}
+
+		tokenString, terr := signJwt(&a.config.JWT, gotrueClaims)
+		if terr != nil {
 			return apierrors.NewInternalServerError("error generating jwt token").WithInternalError(terr)
 		}
 
@@ -421,9 +474,9 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 			Token:        tokenString,
 			TokenType:    "bearer",
 			ExpiresIn:    a.config.JWT.Exp,
-			ExpiresAt:    expiresAt,
+			ExpiresAt:    expiresAt.Unix(),
 			RefreshToken: refreshToken.Token,
-			User:         existingUser,
+			User:         txUser,
 		}
 
 		return nil
