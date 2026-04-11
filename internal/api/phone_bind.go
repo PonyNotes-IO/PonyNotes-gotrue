@@ -343,7 +343,9 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 		"existing_user_id": existingUser.ID,
 	}).Info("[ConfirmPhoneBind] Binding OAuth identity to existing account")
 
-	tokenHash := crypto.GenerateTokenHash(phone, params.Token)
+	// 规范化手机号格式，确保与发送时一致
+	formattedPhone := formatPhoneNumber(phone)
+	tokenHash := crypto.GenerateTokenHash(formattedPhone, params.Token)
 	if !isOtpValid(tokenHash, existingUser.ConfirmationToken, existingUser.ConfirmationSentAt, a.config.Sms.OtpExp) {
 		logEntry.Error("[ConfirmPhoneBind] OTP verify failed for existing user")
 		return apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Verification code expired or invalid")
@@ -405,23 +407,37 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 			return terr
 		}
 
-		// NOTE: 内联 token 颁发逻辑，避免嵌套事务
-		// 创建 session 和 refresh token，使用事务内部的用户对象
+		// NOTE: 内联 token 颁发逻辑，避免嵌套事务。
+		// 与 issueRefreshToken 一致：GrantAuthenticatedUser 内会 UpdateLastSignInAt，须先设置 LastSignInAt。
+		now := time.Now()
+		txUser.LastSignInAt = &now
+
+		// NOTE: 确保 AppMetaData 和 UserMetaData 不为 nil，避免 JSON 序列化时 panic
+		if txUser.AppMetaData == nil {
+			txUser.AppMetaData = make(map[string]interface{})
+		}
+		if txUser.UserMetaData == nil {
+			txUser.UserMetaData = make(map[string]interface{})
+		}
+
 		refreshToken, terr := models.GrantAuthenticatedUser(tx, txUser, models.GrantParams{})
 		if terr != nil {
 			return apierrors.NewInternalServerError("Database error granting user").WithInternalError(terr)
 		}
+		if refreshToken == nil {
+			return apierrors.NewInternalServerError("RefreshToken is nil after GrantAuthenticatedUser")
+		}
+		if refreshToken.SessionId == nil {
+			return apierrors.NewInternalServerError("RefreshToken.SessionId is nil after GrantAuthenticatedUser")
+		}
+		logEntry.Info("[ConfirmPhoneBind] Refresh token created, sessionId: ", refreshToken.SessionId.String())
 
 		// 添加 AMR claim
 		terr = models.AddClaimToSession(tx, *refreshToken.SessionId, models.PasswordGrant)
 		if terr != nil {
 			return terr
 		}
-
-		// 直接生成 JWT token，避免通过 FindSessionByID 加载 session
-		// 这样可以避免 pop 的 eager loading 在事务内可能出现的 nil 问题
-		now := time.Now()
-		txUser.LastSignInAt = &now
+		logEntry.Info("[ConfirmPhoneBind] AMR claim added, building JWT...")
 
 		issuedAt := now.UTC()
 		expiresAt := issuedAt.Add(time.Second * time.Duration(a.config.JWT.Exp))
@@ -524,8 +540,9 @@ func (a *API) confirmPhoneBindAuthenticated(ctx context.Context, db *storage.Con
 		// 手机号未注册 → 更新当前用户的手机号
 		logEntry.Info("[ConfirmPhoneBind] No existing user, updating current user's phone")
 
-		// 验证 OTP
-		tokenHash := crypto.GenerateTokenHash(phone, params.Token)
+		// 验证 OTP（使用格式化的手机号确保与发送时一致）
+		formattedPhone := formatPhoneNumber(phone)
+		tokenHash := crypto.GenerateTokenHash(formattedPhone, params.Token)
 		if !isOtpValid(tokenHash, user.ConfirmationToken, user.ConfirmationSentAt, a.config.Sms.OtpExp) {
 			logEntry.Error("[ConfirmPhoneBind] OTP verify failed for current user")
 			return apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Verification code expired or invalid")
@@ -555,9 +572,11 @@ func (a *API) confirmPhoneBindAuthenticated(ctx context.Context, db *storage.Con
 
 // verifyPhoneOTPForBind 验证手机号 OTP 并标记已确认（用于绑定流程）
 func (a *API) verifyPhoneOTPForBind(db *storage.Connection, user *models.User, phone, token, aud string) error {
-	tokenHash := crypto.GenerateTokenHash(phone, token)
+	// 规范化手机号格式，确保与发送时一致
+	formattedPhone := formatPhoneNumber(phone)
+	tokenHash := crypto.GenerateTokenHash(formattedPhone, token)
 
-	verifyUser, err := models.FindUserByPhoneAndAudience(db, phone, aud)
+	verifyUser, err := models.FindUserByPhoneAndAudience(db, formattedPhone, aud)
 	if err != nil {
 		return apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Invalid or expired verification code")
 	}

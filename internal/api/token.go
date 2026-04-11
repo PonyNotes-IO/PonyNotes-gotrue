@@ -488,6 +488,14 @@ func (a *API) generateAccessToken(r *http.Request, tx *storage.Connection, user 
 	if terr != nil {
 		return "", 0, terr
 	}
+	// NOTE: nil maps in AppMetaData/UserMetaData cause panics during JSON serialization
+	// in signJwt → jwt.Marshal → AccessTokenClaims marshaling.
+	if user.AppMetaData == nil {
+		user.AppMetaData = make(map[string]interface{})
+	}
+	if user.UserMetaData == nil {
+		user.UserMetaData = make(map[string]interface{})
+	}
 	aal, amr, terr := session.CalculateAALAndAMR(user)
 	if terr != nil {
 		return "", 0, terr

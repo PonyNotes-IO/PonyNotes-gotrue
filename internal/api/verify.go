@@ -74,11 +74,18 @@ func (p *VerifyParams) Validate(r *http.Request, a *API) error {
 			}
 			
 			if isPhoneOtpVerification(p) {
+				originalPhone := p.Phone
 				p.Phone, err = validatePhone(p.Phone)
 				if err != nil {
 					return err
 				}
 				p.TokenHash = crypto.GenerateTokenHash(p.Phone, p.Token)
+				
+				logrus.WithFields(logrus.Fields{
+					"original_phone": originalPhone,
+					"formatted_phone": p.Phone,
+					"token_hash": p.TokenHash,
+				}).Info("[VerifyParams.Validate] Phone formatted for OTP validation")
 			} else if isEmailOtpVerification(p) {
 				p.Email, err = a.validateEmail(p.Email)
 				if err != nil {
@@ -836,10 +843,41 @@ func (a *API) verifyUserAndToken(conn *storage.Connection, params *VerifyParams,
 			sentAt = user.PhoneChangeSentAt
 			expectedToken = user.PhoneChangeToken
 		} else if params.Type == "reauthentication" {
-			// For reauthentication, use the reauthentication token
 			sentAt = user.ReauthenticationSentAt
 			expectedToken = user.ReauthenticationToken
+		} else if params.Type == smsVerification {
+			// For smsVerification, try reauthentication token first (set by PUT /user flow),
+			// then fall back to confirmation token (set by signup flow)
+			if user.ReauthenticationSentAt != nil && user.ReauthenticationToken != "" {
+				// Check if reauthentication token is more recent or still valid
+				if user.ConfirmationSentAt == nil ||
+					user.ReauthenticationSentAt.After(*user.ConfirmationSentAt) ||
+					isOtpValid(tokenHash, user.ReauthenticationToken, user.ReauthenticationSentAt, config.Sms.OtpExp) {
+					sentAt = user.ReauthenticationSentAt
+					expectedToken = user.ReauthenticationToken
+				}
+			}
 		}
+
+		// Debug logging with selected token type
+		tokenSource := "confirmation"
+		if params.Type == phoneChangeVerification {
+			tokenSource = "phone_change"
+		} else if params.Type == "reauthentication" || (params.Type == smsVerification && expectedToken == user.ReauthenticationToken) {
+			tokenSource = "reauthentication"
+		}
+		logrus.WithFields(logrus.Fields{
+			"user_id":        user.ID,
+			"verify_type":    params.Type,
+			"token_source":   tokenSource,
+			"params_phone":   params.Phone,
+			"phone_change":   phone,
+			"token_hash":     tokenHash,
+			"expected_token": expectedToken,
+			"sent_at":        sentAt,
+			"otp_exp":        config.Sms.OtpExp,
+			"is_equal":       tokenHash == expectedToken,
+		}).Info("[verifyUserAndToken] Phone OTP validation - token comparison")
 
 		if !config.Hook.SendSMS.Enabled && config.Sms.IsTwilioVerifyProvider() {
 			if err := smsProvider.(*sms_provider.TwilioVerifyProvider).VerifyOTP(phone, params.Token); err != nil {
