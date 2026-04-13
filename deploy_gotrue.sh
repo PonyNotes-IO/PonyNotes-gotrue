@@ -11,7 +11,7 @@ set -euo pipefail
 
 ########################################################################
 # 可配置项（按需修改或通过环境变量覆盖）
-REPO_DIR="${REPO_DIR:-/Users/kuncao/github.com/PonyNotes-IO/PonyNotes-gotrue}"
+REPO_DIR="${REPO_DIR:-/Users/caokun/Projects/github.com/PonyNotes-IO/PonyNotes-gotrue}"
 BUILD_PLATFORM="${BUILD_PLATFORM:-linux/amd64}"
 IMAGE_NAME="${IMAGE_NAME:-appflowyinc/gotrue}"
 IMAGE_TAG="${IMAGE_TAG:-dev-aliyun-sms}"
