@@ -225,6 +225,10 @@ func NewAPIWithVersion(globalConfig *conf.GlobalConfiguration, db *storage.Conne
 			r.Post("/", api.Verify)
 		})
 
+		// 手机号绑定（OAuth pending 流程，无需登录态）
+		r.Post("/send-phone-bind-code", api.SendPhoneBindCode)
+		r.Post("/confirm-phone-bind", api.ConfirmPhoneBind)
+
 		r.With(api.requireAuthentication).Post("/logout", api.Logout)
 
 		r.With(api.requireAuthentication).Route("/reauthenticate", func(r *router) {
@@ -240,6 +244,9 @@ func NewAPIWithVersion(globalConfig *conf.GlobalConfiguration, db *storage.Conne
 			// 手机号绑定（含账号合并）
 			r.Post("/send-phone-bind-code", api.SendPhoneBindCode)
 			r.Post("/confirm-phone-bind", api.ConfirmPhoneBind)
+
+			// 邮箱检测（用于绑定/换绑前预检查）
+			r.Post("/check-email-registered", api.CheckEmailRegistered)
 
 			r.Route("/identities", func(r *router) {
 				r.Use(api.requireManualLinkingEnabled)

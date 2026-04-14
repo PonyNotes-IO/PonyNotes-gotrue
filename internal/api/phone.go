@@ -75,8 +75,7 @@ func (a *API) sendPhoneConfirmation(r *http.Request, tx *storage.Connection, use
 	case phoneChangeVerification:
 		token = &user.PhoneChangeToken
 		sentAt = user.PhoneChangeSentAt
-		// 规范化手机号格式，确保存储和查询时的格式一致
-		user.PhoneChange = formatPhoneNumber(phone)
+		user.PhoneChange = formatPhoneNumber(phone) // 存储格式化的手机号
 		includeFields = append(includeFields, "phone_change", "phone_change_token", "phone_change_sent_at")
 		logEntry.Info("[SEND_PHONE_CONFIRMATION] Type: phoneChangeVerification")
 	case phoneConfirmationOtp:
@@ -161,7 +160,9 @@ func (a *API) sendPhoneConfirmation(r *http.Request, tx *storage.Connection, use
 		logEntry.WithField("otp", otp).Info("📱 [sendPhoneConfirmation] Using test OTP")
 	}
 
-	*token = crypto.GenerateTokenHash(phone, otp)
+	// 确保使用格式化的手机号生成 token hash（适用于 test OTP 和正常 OTP）
+	formattedPhoneForToken := formatPhoneNumber(phone)
+	*token = crypto.GenerateTokenHash(formattedPhoneForToken, otp)
 
 	switch otpType {
 	case phoneConfirmationOtp:

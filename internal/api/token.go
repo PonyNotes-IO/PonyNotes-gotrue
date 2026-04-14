@@ -12,9 +12,8 @@ import (
 
 	"github.com/gofrs/uuid"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/sethvargo/go-password/password"
+	"github.com/sirupsen/logrus"
 	"github.com/xeipuuv/gojsonschema"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/supabase/auth/internal/api/apierrors"
 	"github.com/supabase/auth/internal/hooks/v0hooks"
@@ -47,10 +46,17 @@ type AccessTokenResponse struct {
 	ExpiresIn            int                `json:"expires_in"`
 	ExpiresAt            int64              `json:"expires_at"`
 	RefreshToken         string             `json:"refresh_token"`
-	User                 *models.User       `json:"user"`
+	User                 *models.User       `json:"user,omitempty"`
 	ProviderAccessToken  string             `json:"provider_token,omitempty"`
 	ProviderRefreshToken string             `json:"provider_refresh_token,omitempty"`
 	WeakPassword         *WeakPasswordError `json:"weak_password,omitempty"`
+}
+
+// OAuthPendingTokenResponse is returned when OAuth succeeds but user needs phone binding
+type OAuthPendingTokenResponse struct {
+	PendingToken string `json:"pending_token"`
+	Platform     string `json:"platform"`
+	ExpiresIn    int    `json:"expires_in"` // pending token TTL in seconds
 }
 
 // AsRedirectURL encodes the AccessTokenResponse as a redirect URL that
@@ -295,19 +301,15 @@ func (a *API) ThirdPartyGrant(ctx context.Context, w http.ResponseWriter, r *htt
 		return err
 	}
 
-	aud := a.requestAud(ctx, r)
 	config := a.config
 
-	//var user *models.User
 	var grantParams models.GrantParams
 	var err error
-	var user *models.User
 
 	grantParams.FillGrantParams(r)
 
 	provider, err := a.ThirdPartyProviderProvider(params.Code, params.Platform)
 	if err != nil {
-		// record third-party provider creation error
 		go func() {
 			_ = a.recordSignInEvent(ctx, r, uuid.Nil, metering.LoginTypeOAuth, &metering.LoginData{Provider: params.Platform, Extra: map[string]interface{}{"error": err.Error()}}, false, "third_party_provider_error")
 		}()
@@ -322,67 +324,50 @@ func (a *API) ThirdPartyGrant(ctx context.Context, w http.ResponseWriter, r *htt
 
 	identity, err := models.FindIdentityByIdAndProvider(a.db, providerIdValue, params.Platform)
 	if err != nil {
-		// 如果没找到就是没号
 		if models.IsNotFoundError(err) {
+			// OAuth identity not found → user needs to bind a phone number.
+			// Store OAuth data in pending table and return pending_token (no temp user created).
 			userMeta, err := provider.GetUserMeta()
 			if err != nil {
 				return err
 			}
-			// Satisfy NewIdentity requirement: ensure provider id exists as "sub"
 			if _, ok := userMeta["sub"]; !ok {
 				userMeta["sub"] = providerIdValue
 			}
-			newPassword, err := password.Generate(64, 10, 1, false, true)
-			if err != nil {
-				return apierrors.NewInternalServerError("Error generating password").WithInternalError(err)
-			}
-			user, err = models.NewUser("", "", newPassword, aud, nil)
-			if err != nil {
-				if errors.Is(err, bcrypt.ErrPasswordTooLong) {
-					return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, err.Error())
-				}
-				return apierrors.NewInternalServerError("Error creating user").WithInternalError(err)
-			}
-			user.IsSSOUser = true
-			user.UserMetaData = userMeta
-			user.PasswordIsSet = false
 
-			identity, err := models.NewIdentity(user, params.Platform, userMeta)
+			pendingUser, err := models.NewOAuthPendingUser(params.Platform, providerIdValue, userMeta)
 			if err != nil {
-				return apierrors.NewInternalServerError("new identity fail.").WithInternalError(err)
+				return apierrors.NewInternalServerError("Error creating pending user record").WithInternalError(err)
 			}
-			err = a.db.Transaction(func(tx *storage.Connection) error {
-				// 使用 Create 而不是 Save，确保正确创建新记录
-				if terr := tx.Create(user); terr != nil {
-					return apierrors.NewInternalServerError("Database error saving new user").WithInternalError(terr)
-				}
-				// 设置用户角色
-				if terr := user.SetRole(tx, config.JWT.DefaultGroupName); terr != nil {
-					return apierrors.NewInternalServerError("Database error updating user role").WithInternalError(terr)
-				}
-				// 创建 identity
-				if terr := tx.Create(identity); terr != nil {
-					return apierrors.NewInternalServerError("Error creating identity").WithInternalError(terr)
-				}
-				return nil
+			if err := db.Create(pendingUser); err != nil {
+				return apierrors.NewInternalServerError("Database error saving pending user").WithInternalError(err)
+			}
+
+			logrus.WithFields(logrus.Fields{
+				"pending_user_id": pendingUser.ID,
+				"platform":        params.Platform,
+			}).Info("[ThirdPartyGrant] OAuth identity not found, storing pending user for phone binding")
+
+			go func() {
+				_ = a.recordSignInEvent(ctx, r, uuid.Nil, metering.LoginTypeOAuth, &metering.LoginData{Provider: params.Platform, Extra: map[string]interface{}{"pending_user_id": pendingUser.ID.String()}}, false, "pending_user_created")
+			}()
+
+			return sendJSON(w, http.StatusOK, &OAuthPendingTokenResponse{
+				PendingToken: pendingUser.PendingToken,
+				Platform:     params.Platform,
+				ExpiresIn:    1800, // 30 minutes
 			})
-			if err != nil {
-				return apierrors.NewInternalServerError("Database operation failed during account creation.").WithInternalError(err)
-			}
-		} else {
-			// 报错了
-			return apierrors.NewInternalServerError("Database error querying schema").WithInternalError(err)
 		}
-	} else {
-		// 有号
-		user, err = models.FindUserByID(a.db, identity.UserID)
-		if err != nil {
-			if models.IsNotFoundError(err) {
-				return apierrors.NewInternalServerError("Incomplete account data; no corresponding user found.").WithInternalError(err)
+		return apierrors.NewInternalServerError("Database error querying schema").WithInternalError(err)
+	}
 
-			}
-			return apierrors.NewInternalServerError("Database error querying schema").WithInternalError(err)
+	// OAuth identity found → existing user, issue normal token
+	user, err := models.FindUserByID(a.db, identity.UserID)
+	if err != nil {
+		if models.IsNotFoundError(err) {
+			return apierrors.NewInternalServerError("Incomplete account data; no corresponding user found.").WithInternalError(err)
 		}
+		return apierrors.NewInternalServerError("Database error querying schema").WithInternalError(err)
 	}
 
 	var token *AccessTokenResponse
@@ -397,19 +382,17 @@ func (a *API) ThirdPartyGrant(ctx context.Context, w http.ResponseWriter, r *htt
 		if terr != nil {
 			return terr
 		}
-
 		return nil
 	})
 	if err != nil {
 		return err
 	}
 
-	metering.RecordLogin(metering.LoginTypePassword, user.ID, &metering.LoginData{
+	metering.RecordLogin(metering.LoginTypeOAuth, user.ID, &metering.LoginData{
 		Provider: params.Platform,
 	})
-	// persist structured sign-in log asynchronously
 	go func() {
-		_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypePassword, &metering.LoginData{Provider: params.Platform}, true, "")
+		_ = a.recordSignInEvent(ctx, r, user.ID, metering.LoginTypeOAuth, &metering.LoginData{Provider: params.Platform}, true, "")
 	}()
 	return sendJSON(w, http.StatusOK, token)
 }
@@ -504,6 +487,14 @@ func (a *API) generateAccessToken(r *http.Request, tx *storage.Connection, user 
 	session, terr := models.FindSessionByID(tx, *sessionId, false)
 	if terr != nil {
 		return "", 0, terr
+	}
+	// NOTE: nil maps in AppMetaData/UserMetaData cause panics during JSON serialization
+	// in signJwt → jwt.Marshal → AccessTokenClaims marshaling.
+	if user.AppMetaData == nil {
+		user.AppMetaData = make(map[string]interface{})
+	}
+	if user.UserMetaData == nil {
+		user.UserMetaData = make(map[string]interface{})
 	}
 	aal, amr, terr := session.CalculateAALAndAMR(user)
 	if terr != nil {

@@ -9,8 +9,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/sirupsen/logrus"
 	"github.com/supabase/auth/internal/api/apierrors"
+	"github.com/supabase/auth/internal/api/sms_provider"
+	"github.com/supabase/auth/internal/hooks/v0hooks"
 	"github.com/supabase/auth/internal/crypto"
 	"github.com/supabase/auth/internal/models"
 	"github.com/supabase/auth/internal/observability"
@@ -19,7 +22,8 @@ import (
 
 // SendPhoneBindCodeParams 是绑定手机号发送验证码的参数
 type SendPhoneBindCodeParams struct {
-	Phone string `json:"phone"`
+	Phone       string `json:"phone"`
+	PendingToken string `json:"pending_token"` // OAuth 流程中的临时 token（可选）
 }
 
 // SendPhoneBindCodeResponse 是绑定手机号发送验证码的响应
@@ -27,29 +31,23 @@ type SendPhoneBindCodeResponse struct {
 	CodeSent    bool   `json:"code_sent"`
 	PhoneExists bool   `json:"phone_exists"` // 手机号已被其他账号注册
 	IsOwnPhone  bool   `json:"is_own_phone"` // 手机号是当前用户的
-	ExistingUID string `json:"existing_uid,omitempty"` // 已存在账号的 UID（用于合并时展示）
+	ExistingUID string `json:"existing_uid,omitempty"` // 已存在账号的 UID
 	Message     string `json:"message,omitempty"`
 }
 
 // SendPhoneBindCode 发送绑定手机号的验证码
-// 如果手机号已被其他账号注册，返回 phone_exists=true，前端据此弹出"账号合并"确认框
+// - 有 pending_token：OAuth pending 流程，pending_token 识别待绑定用户
+// - 无 pending_token：已登录用户换绑手机号流程
 func (a *API) SendPhoneBindCode(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	db := a.db.WithContext(ctx)
 	aud := a.requestAud(ctx, r)
-
-	// 获取当前用户（必须已登录）
-	user := getUser(ctx)
-	if user == nil {
-		return apierrors.NewForbiddenError(apierrors.ErrorCodeNotAdmin, "User not authenticated")
-	}
 
 	params := &SendPhoneBindCodeParams{}
 	if err := json.NewDecoder(r.Body).Decode(params); err != nil {
 		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Invalid request body: "+err.Error())
 	}
 
-	// 验证手机号格式
 	phone, err := validatePhone(params.Phone)
 	if err != nil {
 		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, err.Error())
@@ -57,10 +55,89 @@ func (a *API) SendPhoneBindCode(w http.ResponseWriter, r *http.Request) error {
 
 	logEntry := observability.GetLogEntry(r).Entry
 	logEntry.WithFields(logrus.Fields{
+		"phone": phone,
+		"aud":   aud,
+	}).Info("[SendPhoneBindCode] Processing phone bind code request")
+
+	// 有 pending_token → OAuth pending 流程
+	if params.PendingToken != "" {
+		return a.sendPhoneBindCodeWithPendingToken(ctx, db, w, r, phone, params.PendingToken, logEntry)
+	}
+
+	// 无 pending_token → 已登录用户换绑手机号流程
+	return a.sendPhoneBindCodeAuthenticated(ctx, db, w, r, phone, logEntry)
+}
+
+// sendPhoneBindCodeWithPendingToken OAuth pending 流程的发送验证码
+func (a *API) sendPhoneBindCodeWithPendingToken(ctx context.Context, db *storage.Connection, w http.ResponseWriter, r *http.Request, phone, pendingToken string, logEntry *logrus.Entry) error {
+	pendingUser, err := models.FindOAuthPendingUserByToken(db, pendingToken)
+	if err != nil {
+		if models.IsOAuthPendingUserNotFoundError(err) {
+			return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Pending token expired or invalid. Please re-authenticate.")
+		}
+		logEntry.WithError(err).Error("[SendPhoneBindCode] Database error finding pending user")
+		return apierrors.NewInternalServerError("Database error").WithInternalError(err)
+	}
+
+	logEntry = logEntry.WithFields(logrus.Fields{
+		"pending_user_id": pendingUser.ID,
+		"platform":        pendingUser.Platform,
+	})
+
+	// 检查手机号是否已被其他用户注册
+	existingUser, err := models.FindUserByPhoneAndAudience(db, phone, a.requestAud(ctx, r))
+	if err != nil {
+		if !models.IsNotFoundError(err) {
+			logEntry.WithError(err).Error("[SendPhoneBindCode] Database error checking phone")
+			return apierrors.NewInternalServerError("Database error checking phone").WithInternalError(err)
+		}
+		// 手机号未被占用，OTP 发送到该手机（将绑定到新建账号）
+		logEntry.Info("[SendPhoneBindCode] Phone not registered, sending OTP")
+
+		tmpUser := &models.User{Aud: a.requestAud(ctx, r)}
+		tmpUser.Phone = storage.NullString(phone)
+
+		if _, err := a.sendPhoneConfirmation(r, db, tmpUser, phone, phoneConfirmationOtp, sms_provider.SMSProvider); err != nil {
+			logEntry.WithError(err).Error("[SendPhoneBindCode] Failed to send OTP")
+			return err
+		}
+
+		return sendJSON(w, http.StatusOK, &SendPhoneBindCodeResponse{
+			CodeSent:    true,
+			PhoneExists: false,
+			IsOwnPhone:  false,
+		})
+	}
+
+	// 手机号已被其他账号注册 → OTP 发送到已注册用户
+	logEntry.WithFields(logrus.Fields{
+		"existing_user_id": existingUser.ID,
+	}).Info("[SendPhoneBindCode] Phone already registered, sending OTP to existing user")
+
+	if _, err := a.sendPhoneConfirmation(r, db, existingUser, phone, phoneConfirmationOtp, sms_provider.SMSProvider); err != nil {
+		logEntry.WithError(err).Error("[SendPhoneBindCode] Failed to send OTP to existing user")
+		return err
+	}
+
+	return sendJSON(w, http.StatusOK, &SendPhoneBindCodeResponse{
+		CodeSent:    true,
+		PhoneExists: true,
+		IsOwnPhone:  false,
+		ExistingUID: existingUser.ID.String(),
+		Message:     "This phone number is already registered. Please verify ownership to bind.",
+	})
+}
+
+// sendPhoneBindCodeAuthenticated 已登录用户换绑手机号流程的发送验证码
+func (a *API) sendPhoneBindCodeAuthenticated(ctx context.Context, db *storage.Connection, w http.ResponseWriter, r *http.Request, phone string, logEntry *logrus.Entry) error {
+	user := getUser(ctx)
+	if user == nil {
+		return apierrors.NewForbiddenError(apierrors.ErrorCodeNotAdmin, "User not authenticated")
+	}
+
+	logEntry = logEntry.WithFields(logrus.Fields{
 		"user_id": user.ID,
-		"phone":   phone,
-		"aud":     aud,
-	}).Info("[SendPhoneBindCode] Processing phone bind request")
+	})
 
 	// 检查手机号是否属于当前用户
 	if user.GetPhone() == phone {
@@ -73,16 +150,16 @@ func (a *API) SendPhoneBindCode(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	// 检查手机号是否已被其他用户注册
-	existingUser, err := models.FindUserByPhoneAndAudience(db, phone, aud)
+	existingUser, err := models.FindUserByPhoneAndAudience(db, phone, a.requestAud(ctx, r))
 	if err != nil {
 		if !models.IsNotFoundError(err) {
 			logEntry.WithError(err).Error("[SendPhoneBindCode] Database error checking phone")
 			return apierrors.NewInternalServerError("Database error checking phone").WithInternalError(err)
 		}
-		// 没找到 → 手机号未被占用，可以正常发送验证码
-		logEntry.Info("[SendPhoneBindCode] Phone not registered, sending code")
+		// 手机号未被占用，OTP 发送到当前用户
+		logEntry.Info("[SendPhoneBindCode] Phone not registered, sending OTP to current user")
 
-		if _, err := a.sendPhoneConfirmation(r, db, user, phone, phoneConfirmationOtp, ""); err != nil {
+		if _, err := a.sendPhoneConfirmation(r, db, user, phone, phoneConfirmationOtp, sms_provider.SMSProvider); err != nil {
 			logEntry.WithError(err).Error("[SendPhoneBindCode] Failed to send OTP")
 			return err
 		}
@@ -94,54 +171,45 @@ func (a *API) SendPhoneBindCode(w http.ResponseWriter, r *http.Request) error {
 		})
 	}
 
-	// 手机号已被其他账号注册 → 返回已存在账号信息，前端弹出合并确认
+	// 手机号已被其他用户注册 → 直接拒绝，不允许绑定他人手机号
 	logEntry.WithFields(logrus.Fields{
 		"existing_user_id": existingUser.ID,
-	}).Info("[SendPhoneBindCode] Phone already registered by another user, returning for merge confirmation")
-
-	return sendJSON(w, http.StatusOK, &SendPhoneBindCodeResponse{
-		CodeSent:    false,
-		PhoneExists: true,
-		IsOwnPhone:  false,
-		ExistingUID: existingUser.ID.String(),
-		Message:     "This phone number is already registered. Would you like to merge accounts?",
-	})
+	}).Warn("[SendPhoneBindCode] Attempted to bind phone registered by another user - rejected")
+	return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "This phone number is already registered by another account and cannot be bound")
 }
 
 // ConfirmPhoneBindParams 是确认手机号绑定的参数
 type ConfirmPhoneBindParams struct {
-	Phone string `json:"phone"`
-	Token string `json:"token"`
-	Merge bool   `json:"merge"` // 是否执行账号合并
+	Phone        string `json:"phone"`
+	Token        string `json:"token"`         // 手机验证码
+	PendingToken string `json:"pending_token"` // OAuth 流程中的临时 token（可选）
+	Merge        bool   `json:"merge"`         // 是否绑定到已注册账号
 }
 
 // ConfirmPhoneBindResponse 是确认手机号绑定的响应
 type ConfirmPhoneBindResponse struct {
-	Merged             bool   `json:"merged"`
-	PrimaryUserID      string `json:"primary_user_id"`           // 合并后保留的主账号 ID
-	DeletedUserID      string `json:"deleted_user_id,omitempty"` // 被删除的重复账号 ID
-	Message            string `json:"message,omitempty"`
-	MigratedWorkspaces int    `json:"migrated_workspaces,omitempty"` // 迁移的工作区数量
+	BindToExisting bool   `json:"bind_to_existing"`
+	UserID         string `json:"user_id"`
+	Message        string `json:"message,omitempty"`
+	AccessToken   string `json:"access_token,omitempty"`
+	RefreshToken  string `json:"refresh_token,omitempty"`
+	ExpiresIn     int    `json:"expires_in,omitempty"`
+	TokenType     string `json:"token_type,omitempty"`
 }
 
-// ConfirmPhoneBind 确认手机号绑定（含账号合并）
+// ConfirmPhoneBind 确认手机号绑定
+// - 有 pending_token：OAuth pending 流程，无需登录态
+// - 无 pending_token：已登录用户换绑手机号流程
 func (a *API) ConfirmPhoneBind(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	db := a.db.WithContext(ctx)
 	aud := a.requestAud(ctx, r)
-
-	// 获取当前用户（必须已登录）
-	user := getUser(ctx)
-	if user == nil {
-		return apierrors.NewForbiddenError(apierrors.ErrorCodeNotAdmin, "User not authenticated")
-	}
 
 	params := &ConfirmPhoneBindParams{}
 	if err := json.NewDecoder(r.Body).Decode(params); err != nil {
 		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Invalid request body: "+err.Error())
 	}
 
-	// 验证手机号格式
 	phone, err := validatePhone(params.Phone)
 	if err != nil {
 		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, err.Error())
@@ -149,101 +217,388 @@ func (a *API) ConfirmPhoneBind(w http.ResponseWriter, r *http.Request) error {
 
 	logEntry := observability.GetLogEntry(r).Entry
 	logEntry.WithFields(logrus.Fields{
-		"user_id": user.ID,
-		"phone":   phone,
-		"merge":   params.Merge,
-		"aud":     aud,
+		"phone":        phone,
+		"pending_token": params.PendingToken,
+		"merge":        params.Merge,
+		"aud":          aud,
 	}).Info("[ConfirmPhoneBind] Processing phone bind confirmation")
 
-	// 检查手机号是否属于当前用户（已绑定的）
-	if user.GetPhone() == phone {
-		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Phone number is already bound to your account")
+	// 有 pending_token → OAuth pending 流程
+	if params.PendingToken != "" {
+		return a.confirmPhoneBindWithPendingToken(ctx, db, w, r, phone, params, logEntry)
 	}
 
-	// 查找已注册该手机号的账号
-	existingUser, err := models.FindUserByPhoneAndAudience(db, phone, aud)
+	// 无 pending_token → 已登录用户换绑手机号流程
+	return a.confirmPhoneBindAuthenticated(ctx, db, w, r, phone, params, logEntry)
+}
+
+// confirmPhoneBindWithPendingToken OAuth pending 流程的确认绑定
+func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.Connection, w http.ResponseWriter, r *http.Request, phone string, params *ConfirmPhoneBindParams, logEntry *logrus.Entry) error {
+	pendingUser, err := models.FindOAuthPendingUserByToken(db, params.PendingToken)
+	if err != nil {
+		if models.IsOAuthPendingUserNotFoundError(err) {
+			return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Pending token expired or invalid. Please re-authenticate.")
+		}
+		logEntry.WithError(err).Error("[ConfirmPhoneBind] Database error finding pending user")
+		return apierrors.NewInternalServerError("Database error").WithInternalError(err)
+	}
+
+	logEntry = logEntry.WithFields(logrus.Fields{
+		"pending_user_id": pendingUser.ID,
+		"platform":        pendingUser.Platform,
+	})
+
+	// 查找是否已有账号使用该手机号
+	existingUser, err := models.FindUserByPhoneAndAudience(db, phone, a.requestAud(ctx, r))
 	if err != nil {
 		if !models.IsNotFoundError(err) {
 			logEntry.WithError(err).Error("[ConfirmPhoneBind] Database error finding existing user")
 			return apierrors.NewInternalServerError("Database error finding user").WithInternalError(err)
 		}
-		// 没找到 → 无法合并，验证码应该也是发给当前用户的
-		logEntry.Info("[ConfirmPhoneBind] No existing user, proceeding with simple bind")
+		// 手机号未注册 → 创建新用户并绑定
+		logEntry.Info("[ConfirmPhoneBind] No existing user, creating new user with OAuth identity")
 
-		// 走普通验证码校验流程
-		if _, err := a.verifyPhoneOTPAndBind(db, user, phone, params.Token, aud); err != nil {
-			logEntry.WithError(err).Error("[ConfirmPhoneBind] OTP verify failed")
+		var newUser *models.User
+		err = db.Transaction(func(tx *storage.Connection) error {
+			var terr error
+
+			newUser, terr = models.NewUser(phone, "", "", a.requestAud(ctx, r), pendingUser.UserMeta)
+			if terr != nil {
+				return apierrors.NewInternalServerError("Error creating user").WithInternalError(terr)
+			}
+			newUser.IsSSOUser = true
+
+			if terr = tx.Create(newUser); terr != nil {
+				return apierrors.NewInternalServerError("Database error saving new user").WithInternalError(terr)
+			}
+			if terr = newUser.SetRole(tx, a.config.JWT.DefaultGroupName); terr != nil {
+				return apierrors.NewInternalServerError("Database error updating user role").WithInternalError(terr)
+			}
+
+			identity, terr := models.NewIdentity(newUser, pendingUser.Platform, pendingUser.UserMeta)
+			if terr != nil {
+				return apierrors.NewInternalServerError("Error creating identity").WithInternalError(terr)
+			}
+			if terr = tx.Create(identity); terr != nil {
+				return apierrors.NewInternalServerError("Error creating identity").WithInternalError(terr)
+			}
+
+			if err := a.verifyPhoneOTPForBind(tx, newUser, phone, params.Token, a.requestAud(ctx, r)); err != nil {
+				return err
+			}
+
+			if terr = tx.Destroy(pendingUser); terr != nil {
+				return apierrors.NewInternalServerError("Error deleting pending user").WithInternalError(terr)
+			}
+
+			if terr = models.NewAuditLogEntry(a.config.AuditLog, nil, tx, newUser, models.UserSignedUpAction, "", map[string]interface{}{
+				"action":   "oauth_pending_bind_new_user",
+				"platform": pendingUser.Platform,
+			}); terr != nil {
+				return terr
+			}
+
+			return nil
+		})
+		if err != nil {
 			return err
 		}
 
+		logEntry.WithField("new_user_id", newUser.ID).Info("[ConfirmPhoneBind] New user created with OAuth identity")
+
+		grantParams := models.GrantParams{
+			FactorID:         nil,
+			SessionNotAfter:  nil,
+			SessionTag:       nil,
+		}
+		grantParams.FillGrantParams(r)
+		token, terr := a.issueRefreshToken(r, db, newUser, models.PasswordGrant, grantParams)
+		if terr != nil {
+			logEntry.WithError(terr).Error("[ConfirmPhoneBind] Failed to issue token")
+			return apierrors.NewInternalServerError("Failed to issue token").WithInternalError(terr)
+		}
+
 		return sendJSON(w, http.StatusOK, &ConfirmPhoneBindResponse{
-			Merged:        false,
-			PrimaryUserID: user.ID.String(),
-			Message:       "Phone number bound successfully",
+			BindToExisting: false,
+			UserID:         newUser.ID.String(),
+			Message:        "Account created successfully.",
+			AccessToken:   token.Token,
+			RefreshToken:  token.RefreshToken,
+			ExpiresIn:     token.ExpiresIn,
+			TokenType:     token.TokenType,
 		})
 	}
 
 	// 找到了已注册账号
-	// 如果前端没有传 merge=true（用户取消合并），则返回错误
 	if !params.Merge {
-		return sendJSON(w, http.StatusOK, &ConfirmPhoneBindResponse{
-			Merged:        false,
-			PrimaryUserID: user.ID.String(),
-			Message:       "Account merge was not confirmed by user",
-		})
+		logEntry.WithFields(logrus.Fields{
+			"existing_user_id": existingUser.ID,
+		}).Warn("[ConfirmPhoneBind] Existing phone found but merge=false - rejecting")
+		return apierrors.NewBadRequestError(apierrors.ErrorCodePhoneExists, "This phone number is already registered. Please confirm binding to merge accounts.")
 	}
 
-	// 执行账号合并
+	// 执行绑定到已注册账号
 	logEntry.WithFields(logrus.Fields{
-		"primary_user_id":   user.ID,
-		"secondary_user_id": existingUser.ID,
-	}).Info("[ConfirmPhoneBind] Executing account merge")
+		"pending_user_id":  pendingUser.ID,
+		"existing_user_id": existingUser.ID,
+	}).Info("[ConfirmPhoneBind] Binding OAuth identity to existing account")
 
-	// 确认 OTP（发给当前用户）
-	if _, err := a.verifyPhoneOTPAndBind(db, user, phone, params.Token, aud); err != nil {
-		logEntry.WithError(err).Error("[ConfirmPhoneBind] OTP verify failed during merge")
+	// 规范化手机号格式，确保与发送时一致
+	formattedPhone := formatPhoneNumber(phone)
+	tokenHash := crypto.GenerateTokenHash(formattedPhone, params.Token)
+	if !isOtpValid(tokenHash, existingUser.ConfirmationToken, existingUser.ConfirmationSentAt, a.config.Sms.OtpExp) {
+		logEntry.Error("[ConfirmPhoneBind] OTP verify failed for existing user")
+		return apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Verification code expired or invalid")
+	}
+
+	// aud 变量在事务内部需要用到，提前获取
+	aud := a.requestAud(ctx, r)
+
+	var sessionToken *AccessTokenResponse
+	err = db.Transaction(func(tx *storage.Connection) error {
+		var terr error
+
+		// 重要：在事务内部重新查询用户，避免使用带有 eager loading 状态的 existingUser
+		// 这样可以避免 pop ORM 在事务中可能出现的 nil 指针问题
+		txUser, terr := models.FindUserByID(tx, existingUser.ID)
+		if terr != nil {
+			return apierrors.NewInternalServerError("Database error finding user in transaction").WithInternalError(terr)
+		}
+
+		identity, terr := models.NewIdentity(txUser, pendingUser.Platform, pendingUser.UserMeta)
+		if terr != nil {
+			return apierrors.NewInternalServerError("Error creating identity").WithInternalError(terr)
+		}
+
+		existingIdentity, terr := models.FindIdentityByIdAndProvider(tx, identity.ProviderID, identity.Provider)
+		if terr != nil {
+			if models.IsNotFoundError(terr) {
+				// identity 不存在，可以创建
+				if terr = tx.Create(identity); terr != nil {
+					return apierrors.NewInternalServerError("Error creating identity").WithInternalError(terr)
+				}
+				logEntry.WithFields(logrus.Fields{
+					"provider":    identity.Provider,
+					"provider_id": identity.ProviderID,
+				}).Info("[ConfirmPhoneBind] OAuth identity created for existing account")
+			} else {
+				// 数据库错误（非 NotFoundError）
+				return apierrors.NewInternalServerError("Database error checking existing identity").WithInternalError(terr)
+			}
+		} else if existingIdentity != nil && existingIdentity.UserID == txUser.ID {
+			logEntry.WithFields(logrus.Fields{
+				"provider":    identity.Provider,
+				"provider_id": identity.ProviderID,
+			}).Info("[ConfirmPhoneBind] Existing account already has this identity, skipping")
+		} else {
+			// identity 已存在但属于其他用户 → 创建会违反唯一约束，直接报错
+			return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "This OAuth identity is already linked to another account")
+		}
+
+		if terr = tx.Destroy(pendingUser); terr != nil {
+			return apierrors.NewInternalServerError("Error deleting pending user").WithInternalError(terr)
+		}
+
+		if terr = models.NewAuditLogEntry(a.config.AuditLog, nil, tx, txUser, models.UserModifiedAction, "", map[string]interface{}{
+			"action":              "bind_oauth_to_existing_phone",
+			"pending_user_id":    pendingUser.ID.String(),
+			"migrated_identities": 1,
+		}); terr != nil {
+			return terr
+		}
+
+		// NOTE: 内联 token 颁发逻辑，避免嵌套事务。
+		// 与 issueRefreshToken 一致：GrantAuthenticatedUser 内会 UpdateLastSignInAt，须先设置 LastSignInAt。
+		now := time.Now()
+		txUser.LastSignInAt = &now
+
+		// NOTE: 确保 AppMetaData 和 UserMetaData 不为 nil，避免 JSON 序列化时 panic
+		if txUser.AppMetaData == nil {
+			txUser.AppMetaData = make(map[string]interface{})
+		}
+		if txUser.UserMetaData == nil {
+			txUser.UserMetaData = make(map[string]interface{})
+		}
+
+		refreshToken, terr := models.GrantAuthenticatedUser(tx, txUser, models.GrantParams{})
+		if terr != nil {
+			return apierrors.NewInternalServerError("Database error granting user").WithInternalError(terr)
+		}
+		if refreshToken == nil {
+			return apierrors.NewInternalServerError("RefreshToken is nil after GrantAuthenticatedUser")
+		}
+		if refreshToken.SessionId == nil {
+			return apierrors.NewInternalServerError("RefreshToken.SessionId is nil after GrantAuthenticatedUser")
+		}
+		logEntry.Info("[ConfirmPhoneBind] Refresh token created, sessionId: ", refreshToken.SessionId.String())
+
+		// 添加 AMR claim
+		terr = models.AddClaimToSession(tx, *refreshToken.SessionId, models.PasswordGrant)
+		if terr != nil {
+			return terr
+		}
+		logEntry.Info("[ConfirmPhoneBind] AMR claim added, building JWT...")
+
+		issuedAt := now.UTC()
+		expiresAt := issuedAt.Add(time.Second * time.Duration(a.config.JWT.Exp))
+
+		// 使用默认的 AAL1 和空 AMR，因为新创建的 session 还没有 claim 数据
+		claims := &v0hooks.AccessTokenClaims{
+			RegisteredClaims: jwt.RegisteredClaims{
+				Subject:   txUser.ID.String(),
+				Audience:  jwt.ClaimStrings{aud},
+				IssuedAt:  jwt.NewNumericDate(issuedAt),
+				ExpiresAt: jwt.NewNumericDate(expiresAt),
+				Issuer:    a.config.JWT.Issuer,
+			},
+			Email:                         txUser.GetEmail(),
+			Phone:                         txUser.GetPhone(),
+			AppMetaData:                   txUser.AppMetaData,
+			UserMetaData:                  txUser.UserMetaData,
+			Role:                          txUser.Role,
+			AuthenticatorAssuranceLevel:   models.AAL1.String(),
+			AuthenticationMethodReference: []models.AMREntry{},
+			SessionId:                     refreshToken.SessionId.String(),
+			IsAnonymous:                   txUser.IsAnonymous,
+		}
+
+		var gotrueClaims jwt.Claims = claims
+		if a.config.Hook.CustomAccessToken.Enabled {
+			input := v0hooks.CustomAccessTokenInput{
+				UserID:               txUser.ID,
+				Claims:               claims,
+				AuthenticationMethod: models.PasswordGrant.String(),
+			}
+			output := v0hooks.CustomAccessTokenOutput{}
+			terr = a.hooksMgr.InvokeHook(tx, r, &input, &output)
+			if terr != nil {
+				return apierrors.NewInternalServerError("Custom access token hook failed").WithInternalError(terr)
+			}
+			if err := validateTokenClaims(output.Claims); err != nil {
+				return apierrors.NewInternalServerError("Invalid custom token claims").WithInternalError(err)
+			}
+			gotrueClaims = jwt.MapClaims(output.Claims)
+		}
+
+		tokenString, terr := signJwt(&a.config.JWT, gotrueClaims)
+		if terr != nil {
+			return apierrors.NewInternalServerError("error generating jwt token").WithInternalError(terr)
+		}
+
+		// 保存到 sessionToken 供外部使用
+		sessionToken = &AccessTokenResponse{
+			Token:        tokenString,
+			TokenType:    "bearer",
+			ExpiresIn:    a.config.JWT.Exp,
+			ExpiresAt:    expiresAt.Unix(),
+			RefreshToken: refreshToken.Token,
+			User:         txUser,
+		}
+
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 
-	// 保存 secondaryUser 的 UUID（在数据库删除前）
-	secondaryUserUUID := existingUser.ID.String()
-
-	// 执行认证层合并：迁移 identities，失效 sessions，软删除 secondaryUser
-	if err := a.mergeAuthUsers(db, user, existingUser); err != nil {
-		logEntry.WithError(err).Error("[ConfirmPhoneBind] Auth merge failed")
-		return apierrors.NewInternalServerError("Account auth merge failed").WithInternalError(err)
-	}
-
-	logEntry.Info("[ConfirmPhoneBind] Auth merge completed, now migrating user data")
-
-	// 调用 Cloud API 执行数据迁移
-	migratedCount, err := a.migrateUserData(ctx, user.ID.String(), secondaryUserUUID)
-	if err != nil {
-		logEntry.WithError(err).Warn("[ConfirmPhoneBind] Data migration failed, but auth merge succeeded")
-		// 数据迁移失败不影响整体合并成功（数据可以通过定时任务补迁移）
-	}
-
-	if migratedCount > 0 {
-		logEntry.WithField("migrated_workspaces", migratedCount).Info("[ConfirmPhoneBind] Data migration completed")
-	}
-
-	logEntry.WithFields(logrus.Fields{
-		"primary_user_id":    user.ID,
-		"deleted_user_id":    secondaryUserUUID,
-		"migrated_workspaces": migratedCount,
-	}).Info("[ConfirmPhoneBind] Account merge completed successfully")
+	logEntry.WithField("existing_user_id", existingUser.ID).Info("[ConfirmPhoneBind] OAuth identity bound to existing account successfully")
 
 	return sendJSON(w, http.StatusOK, &ConfirmPhoneBindResponse{
-		Merged:             true,
-		PrimaryUserID:      user.ID.String(),
-		DeletedUserID:      secondaryUserUUID,
-		MigratedWorkspaces: migratedCount,
-		Message:            fmt.Sprintf("Accounts merged successfully. %d workspace(s) migrated.", migratedCount),
+		BindToExisting: true,
+		UserID:         existingUser.ID.String(),
+		Message:        "OAuth identity bound to existing account successfully.",
+		AccessToken:    sessionToken.Token,
+		RefreshToken:   sessionToken.RefreshToken,
+		ExpiresIn:      sessionToken.ExpiresIn,
+		TokenType:      sessionToken.TokenType,
 	})
 }
 
+// confirmPhoneBindAuthenticated 已登录用户换绑手机号流程的确认绑定
+func (a *API) confirmPhoneBindAuthenticated(ctx context.Context, db *storage.Connection, w http.ResponseWriter, r *http.Request, phone string, params *ConfirmPhoneBindParams, logEntry *logrus.Entry) error {
+	user := getUser(ctx)
+	if user == nil {
+		return apierrors.NewForbiddenError(apierrors.ErrorCodeNotAdmin, "User not authenticated")
+	}
+
+	logEntry = logEntry.WithFields(logrus.Fields{
+		"user_id": user.ID,
+	})
+
+	// 检查手机号是否已绑定当前用户
+	if user.GetPhone() == phone {
+		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Phone number is already bound to your account")
+	}
+
+	// 检查手机号是否已被其他用户注册
+	existingUser, err := models.FindUserByPhoneAndAudience(db, phone, a.requestAud(ctx, r))
+	if err != nil {
+		if !models.IsNotFoundError(err) {
+			logEntry.WithError(err).Error("[ConfirmPhoneBind] Database error finding existing user")
+			return apierrors.NewInternalServerError("Database error finding user").WithInternalError(err)
+		}
+		// 手机号未注册 → 更新当前用户的手机号
+		logEntry.Info("[ConfirmPhoneBind] No existing user, updating current user's phone")
+
+		// 验证 OTP（使用格式化的手机号确保与发送时一致）
+		formattedPhone := formatPhoneNumber(phone)
+		tokenHash := crypto.GenerateTokenHash(formattedPhone, params.Token)
+		if !isOtpValid(tokenHash, user.ConfirmationToken, user.ConfirmationSentAt, a.config.Sms.OtpExp) {
+			logEntry.Error("[ConfirmPhoneBind] OTP verify failed for current user")
+			return apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Verification code expired or invalid")
+		}
+
+		// 更新手机号
+		if err := user.SetPhone(db, phone); err != nil {
+			logEntry.WithError(err).Error("[ConfirmPhoneBind] Failed to update phone")
+			return apierrors.NewInternalServerError("Failed to update phone").WithInternalError(err)
+		}
+
+		logEntry.WithField("new_phone", phone).Info("[ConfirmPhoneBind] Phone updated successfully")
+
+		return sendJSON(w, http.StatusOK, &ConfirmPhoneBindResponse{
+			BindToExisting: false,
+			UserID:         user.ID.String(),
+			Message:        "Phone number updated successfully.",
+		})
+	}
+
+	// 手机号已被其他用户注册 → 直接拒绝，不允许绑定他人手机号
+	logEntry.WithFields(logrus.Fields{
+		"existing_user_id": existingUser.ID,
+	}).Warn("[ConfirmPhoneBind] Attempted to bind phone registered by another user - rejected")
+	return apierrors.NewBadRequestError(apierrors.ErrorCodePhoneExists, "This phone number is already registered by another account and cannot be bound")
+}
+
+// verifyPhoneOTPForBind 验证手机号 OTP 并标记已确认（用于绑定流程）
+func (a *API) verifyPhoneOTPForBind(db *storage.Connection, user *models.User, phone, token, aud string) error {
+	// 规范化手机号格式，确保与发送时一致
+	formattedPhone := formatPhoneNumber(phone)
+	tokenHash := crypto.GenerateTokenHash(formattedPhone, token)
+
+	verifyUser, err := models.FindUserByPhoneAndAudience(db, formattedPhone, aud)
+	if err != nil {
+		return apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Invalid or expired verification code")
+	}
+
+	if verifyUser.ID != user.ID {
+		return apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Verification code mismatch")
+	}
+
+	if !isOtpValid(tokenHash, verifyUser.ConfirmationToken, verifyUser.ConfirmationSentAt, a.config.Sms.OtpExp) {
+		return apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Verification code expired or invalid")
+	}
+
+	now := time.Now()
+	verifyUser.PhoneConfirmedAt = &now
+	if err := db.UpdateOnly(verifyUser, "phone_confirmed_at"); err != nil {
+		return apierrors.NewInternalServerError("Error confirming phone").WithInternalError(err)
+	}
+
+	return nil
+}
+
 // migrateUserData 调用 Cloud API 将 secondary 用户的工作区数据迁移到 primary 用户
-// 返回迁移的工作区数量
 func (a *API) migrateUserData(ctx context.Context, primaryUserUUID, secondaryUserUUID string) (int, error) {
 	cloudURL := a.config.Cloud.URL
 	if cloudURL == "" {
@@ -264,7 +619,6 @@ func (a *API) migrateUserData(ctx context.Context, primaryUserUUID, secondaryUse
 		return 0, fmt.Errorf("failed to marshal request body: %w", err)
 	}
 
-	// 设置请求超时（使用 context，以防 Cloud 服务响应过慢）
 	reqCtx, cancel := context.WithTimeout(ctx, time.Duration(a.config.Cloud.Timeout)*time.Second)
 	defer cancel()
 
@@ -275,15 +629,10 @@ func (a *API) migrateUserData(ctx context.Context, primaryUserUUID, secondaryUse
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	if a.cloudClient == nil {
-		// 如果没有初始化 client，创建一个临时 client
-		client := &http.Client{Timeout: time.Duration(a.config.Cloud.Timeout) * time.Second}
-		return doMigrateUserData(client, req)
-	}
-	return doMigrateUserData(a.cloudClient, req)
+	client := &http.Client{Timeout: time.Duration(a.config.Cloud.Timeout) * time.Second}
+	return doMigrateUserData(client, req)
 }
 
-// doMigrateUserData 执行实际的 HTTP 请求并解析响应
 func doMigrateUserData(client *http.Client, req *http.Request) (int, error) {
 	resp, err := client.Do(req)
 	if err != nil {
@@ -300,12 +649,10 @@ func doMigrateUserData(client *http.Client, req *http.Request) (int, error) {
 		return 0, fmt.Errorf("cloud API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// 解析响应
 	var result struct {
 		MigratedWorkspaceCount int `json:"migrated_workspace_count"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		// 响应格式解析失败，尝试从原始响应中提取
 		logrus.WithError(err).Warn("[migrateUserData] Failed to parse response, treating as partial success")
 		return 0, nil
 	}
@@ -313,138 +660,73 @@ func doMigrateUserData(client *http.Client, req *http.Request) (int, error) {
 	return result.MigratedWorkspaceCount, nil
 }
 
-// verifyPhoneOTPAndBind 验证手机号 OTP 并绑定到用户（不触发账号合并）
-func (a *API) verifyPhoneOTPAndBind(db *storage.Connection, user *models.User, phone, token, aud string) (*models.User, error) {
-	config := a.config
-
-	// 生成 token hash
-	tokenHash := crypto.GenerateTokenHash(phone, token)
-
-	// 查找拥有该 token 的用户（应该是当前用户）
-	verifyUser, err := models.FindUserByPhoneAndAudience(db, phone, aud)
-	if err != nil {
-		return nil, apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Invalid or expired verification code")
-	}
-
-	// 确保 OTP 是发给当前用户的（防止 OTP 发给旧账号时有人用合并请求偷梁换柱）
-	if verifyUser.ID != user.ID {
-		return nil, apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Verification code mismatch")
-	}
-
-	// 校验 OTP
-	isValid := isOtpValid(tokenHash, verifyUser.ConfirmationToken, verifyUser.ConfirmationSentAt, config.Sms.OtpExp)
-	if !isValid {
-		return nil, apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Verification code expired or invalid")
-	}
-
-	// 绑定手机号
-	if err := verifyUser.SetPhone(db, phone); err != nil {
-		return nil, apierrors.NewInternalServerError("Error binding phone").WithInternalError(err)
-	}
-
-	// 标记手机已确认
-	now := time.Now()
-	verifyUser.PhoneConfirmedAt = &now
-	if err := db.UpdateOnly(verifyUser, "phone", "phone_confirmed_at"); err != nil {
-		return nil, apierrors.NewInternalServerError("Error confirming phone").WithInternalError(err)
-	}
-
-	// 如果是 SSO 用户，清除 SSO 标志
-	if verifyUser.IsSSOUser {
-		verifyUser.IsSSOUser = false
-		if err := db.UpdateOnly(verifyUser, "is_sso_user"); err != nil {
-			return nil, apierrors.NewInternalServerError("Error clearing SSO flag").WithInternalError(err)
-		}
-	}
-
-	return verifyUser, nil
+// CheckEmailRegisteredResponse 是检测邮箱是否已注册的响应
+type CheckEmailRegisteredResponse struct {
+	EmailExists bool   `json:"email_exists"`
+	IsOwnEmail  bool   `json:"is_own_email"`
+	ExistingUID string `json:"existing_uid,omitempty"`
+	Message     string `json:"message,omitempty"`
 }
 
-// mergeAuthUsers 将 secondaryUser 的认证数据合并到 primaryUser
-// 合并策略（仅限认证层）：
-//   - identities：从 secondaryUser 迁移到 primaryUser（处理关联的第三方账号）
-//   - sessions：失效 secondaryUser 的所有会话
-//   - factors：删除 secondaryUser 的所有 MFA factors
-//   - refresh_tokens：删除 secondaryUser 的所有 refresh tokens
-//   - phone：已在绑定阶段设置到 primaryUser
-//   - 删除 secondaryUser（软删除）
-// 注意：此函数只处理认证层数据，不涉及业务数据迁移
-func (a *API) mergeAuthUsers(db *storage.Connection, primaryUser, secondaryUser *models.User) error {
-	logEntry := logrus.WithFields(logrus.Fields{
-		"primary_user_id":   primaryUser.ID,
-		"secondary_user_id": secondaryUser.ID,
-	})
+// CheckEmailRegistered 检测邮箱是否已被其他账号注册
+func (a *API) CheckEmailRegistered(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	db := a.db.WithContext(ctx)
+	aud := a.requestAud(ctx, r)
 
-	logEntry.Info("[mergeAuthUsers] Starting auth layer merge")
-
-	err := db.Transaction(func(tx *storage.Connection) error {
-		// 1. 迁移 secondaryUser 的 identities 到 primaryUser
-		identities, err := models.FindIdentitiesByUserID(tx, secondaryUser.ID)
-		if err != nil {
-			return err
-		}
-
-		for _, identity := range identities {
-			// 检查 primaryUser 是否已有相同 provider 的 identity
-			existingIdentity, err := models.FindIdentityByIdAndProvider(tx, identity.ProviderID, identity.Provider)
-			if err == nil && existingIdentity != nil && existingIdentity.UserID == primaryUser.ID {
-				// primaryUser 已有该 provider → 删除 secondaryUser 的这个 identity（避免冲突）
-				logEntry.WithFields(logrus.Fields{
-					"provider":    identity.Provider,
-					"provider_id": identity.ProviderID,
-				}).Info("[mergeAuthUsers] Primary user already has this identity, deleting from secondary")
-				if err := tx.Destroy(identity); err != nil {
-					return err
-				}
-				continue
-			}
-
-			// 将 identity 的 UserID 指向 primaryUser
-			identity.UserID = primaryUser.ID
-			if err := tx.UpdateOnly(identity, "user_id"); err != nil {
-				return err
-			}
-			logEntry.WithFields(logrus.Fields{
-				"provider": identity.Provider,
-			}).Info("[mergeAuthUsers] Migrated identity to primary user")
-		}
-
-		// 2. 删除 secondaryUser 的所有 MFA factors
-		if err := models.DeleteFactorsByUserId(tx, secondaryUser.ID); err != nil {
-			return err
-		}
-		logrus.Info("[mergeAuthUsers] Deleted MFA factors from secondary user")
-
-		// 3. 删除 secondaryUser 的所有 refresh tokens（使其会话失效）
-		if err := models.Logout(tx, secondaryUser.ID); err != nil {
-			return err
-		}
-		logEntry.Info("[mergeAuthUsers] Invalidated all sessions of secondary user")
-
-		// 4. 软删除 secondaryUser
-		if err := secondaryUser.SoftDeleteUser(tx); err != nil {
-			return err
-		}
-		logEntry.WithField("deleted_user_id", secondaryUser.ID).Info("[mergeAuthUsers] Soft deleted secondary user")
-
-		// 5. 记录审计日志
-		if err := models.NewAuditLogEntry(a.config.AuditLog, nil, tx, primaryUser, models.UserModifiedAction, "", map[string]interface{}{
-			"action":            "account_merge",
-			"deleted_user_id":   secondaryUser.ID.String(),
-			"merged_identities": len(identities),
-			"merge_type":        "phone_bind_merge",
-		}); err != nil {
-			return err
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		logEntry.WithError(err).Error("[mergeAuthUsers] Auth merge transaction failed")
-		return err
+	user := getUser(ctx)
+	if user == nil {
+		return apierrors.NewForbiddenError(apierrors.ErrorCodeNotAdmin, "User not authenticated")
 	}
 
-	logEntry.Info("[mergeAuthUsers] Auth layer merge completed successfully")
-	return nil
+	params := &struct {
+		Email string `json:"email"`
+	}{}
+	if err := json.NewDecoder(r.Body).Decode(params); err != nil {
+		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, "Invalid request body: "+err.Error())
+	}
+
+	email, err := a.validateEmail(params.Email)
+	if err != nil {
+		return apierrors.NewBadRequestError(apierrors.ErrorCodeValidationFailed, err.Error())
+	}
+
+	logEntry := observability.GetLogEntry(r).Entry
+	logEntry.WithFields(logrus.Fields{
+		"user_id": user.ID,
+		"email":   email,
+		"aud":     aud,
+	}).Info("[CheckEmailRegistered] Checking email registration status")
+
+	if user.GetEmail() == email {
+		return sendJSON(w, http.StatusOK, &CheckEmailRegisteredResponse{
+			EmailExists: false,
+			IsOwnEmail:  true,
+			Message:     "This email is already bound to your account",
+		})
+	}
+
+	existingUser, err := models.FindUserByEmailAndAudience(db, email, aud)
+	if err != nil {
+		if !models.IsNotFoundError(err) {
+			logEntry.WithError(err).Error("[CheckEmailRegistered] Database error checking email")
+			return apierrors.NewInternalServerError("Database error checking email").WithInternalError(err)
+		}
+		logEntry.Info("[CheckEmailRegistered] Email not registered")
+		return sendJSON(w, http.StatusOK, &CheckEmailRegisteredResponse{
+			EmailExists: false,
+			IsOwnEmail:  false,
+		})
+	}
+
+	logEntry.WithFields(logrus.Fields{
+		"existing_user_id": existingUser.ID,
+	}).Info("[CheckEmailRegistered] Email already registered by another user")
+
+	return sendJSON(w, http.StatusOK, &CheckEmailRegisteredResponse{
+		EmailExists: true,
+		IsOwnEmail:  false,
+		ExistingUID: existingUser.ID.String(),
+		Message:     "该邮箱已被其他账号注册",
+	})
 }

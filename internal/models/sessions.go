@@ -308,6 +308,10 @@ func (s *Session) UpdateAALAndAssociatedFactor(tx *storage.Connection, aal Authe
 
 func (s *Session) CalculateAALAndAMR(user *User) (aal AuthenticatorAssuranceLevel, amr []AMREntry, err error) {
 	amr, aal = []AMREntry{}, AAL1
+	// 防御性检查：确保 AMRClaims 不为 nil
+	if s.AMRClaims == nil {
+		return aal, amr, nil
+	}
 	for _, claim := range s.AMRClaims {
 		if claim.IsAAL2Claim() {
 			aal = AAL2
@@ -317,7 +321,8 @@ func (s *Session) CalculateAALAndAMR(user *User) (aal AuthenticatorAssuranceLeve
 			// SSO users should only have one identity since they are excluded from account linking
 			// These checks act as a safeguard in the event future changes break this assumption.
 			identities := user.Identities
-			if len(identities) == 1 {
+			// 防御性检查：确保 user.Identities 不为 nil
+			if identities != nil && len(identities) == 1 {
 				identity := identities[0]
 				if identity.IsForSSOProvider() {
 					entry.Provider = strings.TrimPrefix(identity.Provider, "sso:")
