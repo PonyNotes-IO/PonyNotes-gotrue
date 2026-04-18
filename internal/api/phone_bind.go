@@ -292,7 +292,9 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 			if terr != nil {
 				return apierrors.NewInternalServerError("Error creating user").WithInternalError(terr)
 			}
-			newUser.IsSSOUser = true
+			// 注意：is_sso_user = false，因为 is_sso_user 是 SAML SSO 专用标志
+			// OAuth（微信/抖音等）用户应保持 false，否则 FindUserByPhoneAndAudience 找不到该用户
+			newUser.IsSSOUser = false
 
 			if terr = tx.Create(newUser); terr != nil {
 				return apierrors.NewInternalServerError("Database error saving new user").WithInternalError(terr)
@@ -314,6 +316,14 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 			verifyTokenHash := crypto.GenerateTokenHash(formattedPhoneForVerify, params.Token)
 			if !isOtpValid(verifyTokenHash, pendingUser.PhoneOTPHash, pendingUser.PhoneOTPSentAt, a.config.Sms.OtpExp) {
 				return apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Invalid or expired verification code")
+			}
+
+			// OTP 验证通过，确认手机号（必须设置，否则后续 OTP 登录时 FindUserByPhoneAndAudience 正常
+			// 能找到用户，但 gotrue 可能将未确认手机号当作未注册处理）
+			phoneConfirmedAt := time.Now()
+			newUser.PhoneConfirmedAt = &phoneConfirmedAt
+			if terr = tx.UpdateOnly(newUser, "phone_confirmed_at"); terr != nil {
+				return apierrors.NewInternalServerError("Error confirming phone").WithInternalError(terr)
 			}
 
 			if terr = tx.Destroy(pendingUser); terr != nil {
