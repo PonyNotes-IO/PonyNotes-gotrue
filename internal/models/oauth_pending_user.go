@@ -14,13 +14,16 @@ import (
 
 // OAuthPendingUser stores OAuth user data before phone binding
 type OAuthPendingUser struct {
-	ID         uuid.UUID              `json:"id" db:"id"`
-	Platform   string                 `json:"platform" db:"platform"`
-	ProviderID string                 `json:"provider_id" db:"provider_id"`
-	UserMeta   JSONMap `json:"user_meta" db:"user_meta"`
-	PendingToken string               `json:"pending_token" db:"pending_token"`
-	ExpiresAt  time.Time             `json:"expires_at" db:"expires_at"`
-	CreatedAt  time.Time             `json:"created_at" db:"created_at"`
+	ID           uuid.UUID  `json:"id" db:"id"`
+	Platform     string     `json:"platform" db:"platform"`
+	ProviderID   string     `json:"provider_id" db:"provider_id"`
+	UserMeta     JSONMap    `json:"user_meta" db:"user_meta"`
+	PendingToken string     `json:"pending_token" db:"pending_token"`
+	ExpiresAt    time.Time  `json:"expires_at" db:"expires_at"`
+	CreatedAt    time.Time  `json:"created_at" db:"created_at"`
+	// 手机号未注册时，OTP hash 存储于此，避免使用 one_time_tokens（需要真实 user_id 外键）
+	PhoneOTPHash   string     `json:"phone_otp_hash,omitempty" db:"phone_otp_hash"`
+	PhoneOTPSentAt *time.Time `json:"phone_otp_sent_at,omitempty" db:"phone_otp_sent_at"`
 }
 
 // TableName is "oauth_pending_users"

@@ -91,15 +91,41 @@ func (a *API) sendPhoneBindCodeWithPendingToken(ctx context.Context, db *storage
 			logEntry.WithError(err).Error("[SendPhoneBindCode] Database error checking phone")
 			return apierrors.NewInternalServerError("Database error checking phone").WithInternalError(err)
 		}
-		// 手机号未被占用，OTP 发送到该手机（将绑定到新建账号）
-		logEntry.Info("[SendPhoneBindCode] Phone not registered, sending OTP")
+		// 手机号未被占用，直接生成 OTP 并存入 pendingUser（不能用 sendPhoneConfirmation，
+		// 因为 one_time_tokens 有 user_id 外键约束，而此时还没有真实用户）
+		logEntry.Info("[SendPhoneBindCode] Phone not registered, sending OTP via pendingUser")
 
-		tmpUser := &models.User{Aud: a.requestAud(ctx, r)}
-		tmpUser.Phone = storage.NullString(phone)
+		// 应用速率限制
+		if ok := a.limiterOpts.Phone.Allow(); !ok {
+			return apierrors.NewTooManyRequestsError(apierrors.ErrorCodeOverSMSSendRateLimit, "SMS rate limit exceeded")
+		}
 
-		if _, err := a.sendPhoneConfirmation(r, db, tmpUser, phone, phoneConfirmationOtp, sms_provider.SMSProvider); err != nil {
-			logEntry.WithError(err).Error("[SendPhoneBindCode] Failed to send OTP")
-			return err
+		// 生成 OTP
+		otp := crypto.GenerateOtp(a.config.Sms.OtpLength)
+
+		// 发送短信
+		smsProvider, smsErr := sms_provider.GetSmsProvider(*a.config)
+		if smsErr != nil {
+			return apierrors.NewInternalServerError("Unable to get SMS provider").WithInternalError(smsErr)
+		}
+		message, smsErr := generateSMSFromTemplate(a.config.Sms.SMSTemplate, otp)
+		if smsErr != nil {
+			return apierrors.NewInternalServerError("error generating sms template").WithInternalError(smsErr)
+		}
+		if _, smsErr = smsProvider.SendMessage(phone, message, sms_provider.SMSProvider, otp); smsErr != nil {
+			logEntry.WithError(smsErr).Error("[SendPhoneBindCode] Failed to send SMS")
+			return apierrors.NewUnprocessableEntityError(apierrors.ErrorCodeSMSSendFailed, "Error sending OTP: %v", smsErr)
+		}
+
+		// 将 OTP hash 存入 pendingUser，供后续 confirm 接口验证
+		formattedPhone := formatPhoneNumber(phone)
+		otpHash := crypto.GenerateTokenHash(formattedPhone, otp)
+		now := time.Now()
+		pendingUser.PhoneOTPHash = otpHash
+		pendingUser.PhoneOTPSentAt = &now
+		if dbErr := db.UpdateOnly(pendingUser, "phone_otp_hash", "phone_otp_sent_at"); dbErr != nil {
+			logEntry.WithError(dbErr).Error("[SendPhoneBindCode] Failed to save OTP to pendingUser")
+			return apierrors.NewInternalServerError("Database error saving OTP").WithInternalError(dbErr)
 		}
 
 		return sendJSON(w, http.StatusOK, &SendPhoneBindCodeResponse{
@@ -283,15 +309,18 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 				return apierrors.NewInternalServerError("Error creating identity").WithInternalError(terr)
 			}
 
-			if err := a.verifyPhoneOTPForBind(tx, newUser, phone, params.Token, a.requestAud(ctx, r)); err != nil {
-				return err
+			// 验证 OTP：手机号未注册时，OTP hash 存在 pendingUser 中（而非 users 表）
+			formattedPhoneForVerify := formatPhoneNumber(phone)
+			verifyTokenHash := crypto.GenerateTokenHash(formattedPhoneForVerify, params.Token)
+			if !isOtpValid(verifyTokenHash, pendingUser.PhoneOTPHash, pendingUser.PhoneOTPSentAt, a.config.Sms.OtpExp) {
+				return apierrors.NewForbiddenError(apierrors.ErrorCodeOTPExpired, "Invalid or expired verification code")
 			}
 
 			if terr = tx.Destroy(pendingUser); terr != nil {
 				return apierrors.NewInternalServerError("Error deleting pending user").WithInternalError(terr)
 			}
 
-			if terr = models.NewAuditLogEntry(a.config.AuditLog, nil, tx, newUser, models.UserSignedUpAction, "", map[string]interface{}{
+			if terr = models.NewAuditLogEntry(a.config.AuditLog, r, tx, newUser, models.UserSignedUpAction, "", map[string]interface{}{
 				"action":   "oauth_pending_bind_new_user",
 				"platform": pendingUser.Platform,
 			}); terr != nil {
@@ -399,7 +428,7 @@ func (a *API) confirmPhoneBindWithPendingToken(ctx context.Context, db *storage.
 			return apierrors.NewInternalServerError("Error deleting pending user").WithInternalError(terr)
 		}
 
-		if terr = models.NewAuditLogEntry(a.config.AuditLog, nil, tx, txUser, models.UserModifiedAction, "", map[string]interface{}{
+		if terr = models.NewAuditLogEntry(a.config.AuditLog, r, tx, txUser, models.UserModifiedAction, "", map[string]interface{}{
 			"action":              "bind_oauth_to_existing_phone",
 			"pending_user_id":    pendingUser.ID.String(),
 			"migrated_identities": 1,
