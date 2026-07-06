@@ -7,7 +7,7 @@ set -euo pipefail
 # 使用方法（默认值按 .ai-rules 配置）:
 #   ./scripts/deploy_gotrue.sh
 # 可通过环境变量覆盖默认值，例如：
-#   BUILD_PLATFORM=linux/amd64 IMAGE_TAG=dev-aliyun-sms REMOTE_HOST=8.152.101.166 ./scripts/deploy_gotrue.sh
+#   BUILD_PLATFORM=linux/amd64 IMAGE_TAG=dev-aliyun-sms REMOTE_HOST=101.201.244.231 ./scripts/deploy_gotrue.sh
 
 ########################################################################
 # 可配置项（按需修改或通过环境变量覆盖）
@@ -19,7 +19,7 @@ FULL_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
 TAR_PATH="${TAR_PATH:-/tmp/gotrue.tar}"
 
 REMOTE_USER="${REMOTE_USER:-root}"
-REMOTE_HOST="${REMOTE_HOST:-8.152.101.166}"
+REMOTE_HOST="${REMOTE_HOST:-101.201.244.231}"
 REMOTE_DIR="${REMOTE_DIR:-/root/docker-compose}"
 REMOTE_TAR_NAME="${REMOTE_TAR_NAME:-gotrue.tar}"
 REMOTE_COMPOSE_FILE="${REMOTE_COMPOSE_FILE:-docker-compose-dev.yml}"
