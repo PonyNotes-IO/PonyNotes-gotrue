@@ -79,8 +79,9 @@ type PasswordGrantParams struct {
 }
 
 type ThirdPartyParams struct {
-	Platform string `json:"platform"`
-	Code     string `json:"code"`
+	Platform     string `json:"platform"`
+	Code        string `json:"code"`
+	PlatformType string `json:"platform_type"`
 }
 
 // PKCEGrantParams are the parameters the PKCEGrant method accepts
@@ -308,7 +309,7 @@ func (a *API) ThirdPartyGrant(ctx context.Context, w http.ResponseWriter, r *htt
 
 	grantParams.FillGrantParams(r)
 
-	provider, err := a.ThirdPartyProviderProvider(params.Code, params.Platform)
+	provider, err := a.ThirdPartyProviderProvider(params.Code, params.Platform, params.PlatformType)
 	if err != nil {
 		go func() {
 			_ = a.recordSignInEvent(ctx, r, uuid.Nil, metering.LoginTypeOAuth, &metering.LoginData{Provider: params.Platform, Extra: map[string]interface{}{"error": err.Error()}}, false, "third_party_provider_error")

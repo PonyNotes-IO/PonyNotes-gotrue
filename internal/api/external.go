@@ -640,13 +640,14 @@ func (a *API) Provider(ctx context.Context, name string, scopes string) (provide
 }
 
 // ThirdPartyProviderProvider returns a ThirdPartyProviderProvider interface for the given name.
-func (a *API) ThirdPartyProviderProvider(code string, name string) (tpp.ThirdPartyProvider, error) {
+// platformType 用于区分平台，可选值: "mobile"（移动App）、"desktop"/"web"（桌面端，默认）
+func (a *API) ThirdPartyProviderProvider(code string, name string, platformType string) (tpp.ThirdPartyProvider, error) {
 	config := a.config.External.ThirdPartyProvider
 	switch name {
 	case "douyin":
 		return tpp.NewDouYinProvider(code, config.DouYin)
 	case "weixin":
-		return tpp.NewWeiXinProvider(code, config.WeiXin)
+		return tpp.NewWeiXinProvider(code, config.WeiXin, platformType)
 	default:
 		return nil, fmt.Errorf("ThirdPartyProvider %s could not be found", name)
 	}

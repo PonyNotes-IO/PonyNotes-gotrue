@@ -21,11 +21,22 @@ type WeiXinProvider struct {
 }
 
 // NewWeiXinProvider 完成access_token获取与openid初始化
-func NewWeiXinProvider(code string, config conf.WeiXinProviderConfiguration) (ThirdPartyProvider, error) {
+// platformType 可选值: "mobile"（移动App）、"desktop"/"web"（桌面端，默认）
+func NewWeiXinProvider(code string, config conf.WeiXinProviderConfiguration, platformType string) (ThirdPartyProvider, error) {
+	// 根据平台类型选择 AppID 和 Secret
+	var clientKey, clientSecret string
+	if platformType == "mobile" && config.Mobile.ClientKey != "" && config.Mobile.ClientSecret != "" {
+		clientKey = config.Mobile.ClientKey
+		clientSecret = config.Mobile.ClientSecret
+	} else {
+		// desktop / web 默认走网站应用配置
+		clientKey = config.ClientKey
+		clientSecret = config.ClientSecret
+	}
 	// 构造API请求URL
 	params := url.Values{}
-	params.Add("appid", config.ClientKey)
-	params.Add("secret", config.ClientSecret)
+	params.Add("appid", clientKey)
+	params.Add("secret", clientSecret)
 	params.Add("code", code)
 	params.Add("grant_type", "authorization_code")
 	tokenURL := "https://api.weixin.qq.com/sns/oauth2/access_token?" + params.Encode()

@@ -383,6 +383,11 @@ type DouYinProviderConfiguration struct {
 type WeiXinProviderConfiguration struct {
 	ClientKey    string `json:"client_id" split_words:"true"`
 	ClientSecret string `json:"client_secret" split_words:"true"`
+	// Mobile 专用配置（用于移动 App 的微信登录，与桌面端分离）
+	Mobile struct {
+		ClientKey    string `json:"client_id" split_words:"true"`
+		ClientSecret string `json:"client_secret" split_words:"true"`
+	} `json:"mobile" split_words:"true"`
 }
 
 type SolanaConfiguration struct {
@@ -929,6 +934,23 @@ func populateGlobal(config *GlobalConfiguration) error {
 		}
 		if oldClientSecret := os.Getenv("GOTRUE_EXTERNAL_THIRD_PARTY_WEIXIN_CLIENT_SECRET"); oldClientSecret != "" && config.External.ThirdPartyProvider.WeiXin.ClientSecret == "" {
 			config.External.ThirdPartyProvider.WeiXin.ClientSecret = oldClientSecret
+		}
+	}
+
+	// 移动端专用微信配置（Mobile App 微信登录，与桌面端分离）
+	if config.External.ThirdPartyProvider.WeiXin.Mobile.ClientKey == "" || config.External.ThirdPartyProvider.WeiXin.Mobile.ClientSecret == "" {
+		if mobileClientKey := os.Getenv("GOTRUE_EXTERNAL_THIRD_PARTY_WEI_XIN_MOBILE_CLIENT_ID"); mobileClientKey != "" {
+			config.External.ThirdPartyProvider.WeiXin.Mobile.ClientKey = mobileClientKey
+		}
+		if mobileClientSecret := os.Getenv("GOTRUE_EXTERNAL_THIRD_PARTY_WEI_XIN_MOBILE_CLIENT_SECRET"); mobileClientSecret != "" {
+			config.External.ThirdPartyProvider.WeiXin.Mobile.ClientSecret = mobileClientSecret
+		}
+		// 兼容旧配置
+		if oldMobileClientKey := os.Getenv("GOTRUE_EXTERNAL_THIRD_PARTY_WEIXIN_MOBILE_CLIENT_ID"); oldMobileClientKey != "" && config.External.ThirdPartyProvider.WeiXin.Mobile.ClientKey == "" {
+			config.External.ThirdPartyProvider.WeiXin.Mobile.ClientKey = oldMobileClientKey
+		}
+		if oldMobileClientSecret := os.Getenv("GOTRUE_EXTERNAL_THIRD_PARTY_WEIXIN_MOBILE_CLIENT_SECRET"); oldMobileClientSecret != "" && config.External.ThirdPartyProvider.WeiXin.Mobile.ClientSecret == "" {
+			config.External.ThirdPartyProvider.WeiXin.Mobile.ClientSecret = oldMobileClientSecret
 		}
 	}
 
