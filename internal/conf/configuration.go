@@ -379,6 +379,11 @@ type ThirdPartyProviderConfiguration struct {
 type DouYinProviderConfiguration struct {
 	ClientKey    string `json:"client_id" split_words:"true"`
 	ClientSecret string `json:"client_secret" split_words:"true"`
+	// Mobile 专用配置（用于移动 App 的抖音登录，与桌面端分离）
+	Mobile struct {
+		ClientKey    string `json:"client_id" split_words:"true"`
+		ClientSecret string `json:"client_secret" split_words:"true"`
+	} `json:"mobile" split_words:"true"`
 }
 type WeiXinProviderConfiguration struct {
 	ClientKey    string `json:"client_id" split_words:"true"`
@@ -961,6 +966,16 @@ func populateGlobal(config *GlobalConfiguration) error {
 		}
 		if douyinClientSecret := os.Getenv("GOTRUE_EXTERNAL_THIRD_PARTY_DOU_YIN_CLIENT_SECRET"); douyinClientSecret != "" && config.External.ThirdPartyProvider.DouYin.ClientSecret == "" {
 			config.External.ThirdPartyProvider.DouYin.ClientSecret = douyinClientSecret
+		}
+	}
+
+	// 移动端专用抖音配置（Mobile App 抖音登录，与桌面端分离）
+	if config.External.ThirdPartyProvider.DouYin.Mobile.ClientKey == "" || config.External.ThirdPartyProvider.DouYin.Mobile.ClientSecret == "" {
+		if mobileClientKey := os.Getenv("GOTRUE_EXTERNAL_THIRD_PARTY_DOU_YIN_MOBILE_CLIENT_ID"); mobileClientKey != "" && config.External.ThirdPartyProvider.DouYin.Mobile.ClientKey == "" {
+			config.External.ThirdPartyProvider.DouYin.Mobile.ClientKey = mobileClientKey
+		}
+		if mobileClientSecret := os.Getenv("GOTRUE_EXTERNAL_THIRD_PARTY_DOU_YIN_MOBILE_CLIENT_SECRET"); mobileClientSecret != "" && config.External.ThirdPartyProvider.DouYin.Mobile.ClientSecret == "" {
+			config.External.ThirdPartyProvider.DouYin.Mobile.ClientSecret = mobileClientSecret
 		}
 	}
 

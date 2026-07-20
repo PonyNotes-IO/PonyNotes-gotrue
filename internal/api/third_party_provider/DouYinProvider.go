@@ -18,11 +18,23 @@ type DouYinProvider struct {
 const GrantType string = "authorization_code"
 
 // NewDouYinProvider
-func NewDouYinProvider(code string, config conf.DouYinProviderConfiguration) (ThirdPartyProvider, error) {
+// platformType 可选值: "mobile"（移动App）、"desktop"/"web"（桌面端，默认）
+func NewDouYinProvider(code string, config conf.DouYinProviderConfiguration, platformType string) (ThirdPartyProvider, error) {
+	// 根据平台类型选择 AppID 和 Secret
+	var clientKey, clientSecret string
+	if platformType == "mobile" && config.Mobile.ClientKey != "" && config.Mobile.ClientSecret != "" {
+		clientKey = config.Mobile.ClientKey
+		clientSecret = config.Mobile.ClientSecret
+	} else {
+		// desktop / web 默认走桌面端配置
+		clientKey = config.ClientKey
+		clientSecret = config.ClientSecret
+	}
+
 	// 初始化SDK client
 	opt := new(credential.Config).
-		SetClientKey(config.ClientKey).      // 改成自己的app_id
-		SetClientSecret(config.ClientSecret) // 改成自己的secret
+		SetClientKey(clientKey).       // 改成自己的app_id
+		SetClientSecret(clientSecret) // 改成自己的secret
 	sdkClient, err := openApiSdkClient.NewClient(opt)
 	if err != nil {
 		return nil, err

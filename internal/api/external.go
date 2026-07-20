@@ -645,7 +645,7 @@ func (a *API) ThirdPartyProviderProvider(code string, name string, platformType 
 	config := a.config.External.ThirdPartyProvider
 	switch name {
 	case "douyin":
-		return tpp.NewDouYinProvider(code, config.DouYin)
+		return tpp.NewDouYinProvider(code, config.DouYin, platformType)
 	case "weixin":
 		return tpp.NewWeiXinProvider(code, config.WeiXin, platformType)
 	default:
